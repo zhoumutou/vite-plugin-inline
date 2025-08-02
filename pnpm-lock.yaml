@@ -35,9 +35,6 @@ importers:
       lint-staged:
         specifier: ^16.1.2
         version: 16.1.2
-      rolldown:
-        specifier: 1.0.0-beta.30
-        version: 1.0.0-beta.30
       rollup:
         specifier: ^4.46.2
         version: 4.46.2

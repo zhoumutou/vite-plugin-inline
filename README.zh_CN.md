@@ -47,7 +47,7 @@ export default defineConfig({
 
 插件接受以下选项：
 
-````typescript
+```typescript
 interface Options {
   /** 是否移除 JS/CSS 文件中的注释 (默认: true) */
   removeComments?: boolean
@@ -68,7 +68,7 @@ interface Options {
 ```html
 <link rel="stylesheet" href="style.css">
 <script type="module" src="main.js"></script>
-````
+```
 
 构建后，启用本插件，HTML 会变为：
 

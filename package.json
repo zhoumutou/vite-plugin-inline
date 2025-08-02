@@ -1,0 +1,57 @@
+{
+  "name": "@zhoumutou/vite-plugin-inline",
+  "type": "module",
+  "version": "0.1.0",
+  "description": "A Vite plugin that inlines CSS and JavaScript assets into HTML files, generating a single, self-contained HTML file with no external dependencies.",
+  "author": "zhoumutou",
+  "license": "MIT",
+  "homepage": "https://github.com/zhoumutou/vite-plugin-inline#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zhoumutou/vite-plugin-inline.git"
+  },
+  "keywords": [
+    "vite",
+    "plugin",
+    "inline",
+    "html",
+    "bundle",
+    "self-contained"
+  ],
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "README.*.md",
+    "README.md",
+    "dist"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --build --noEmit",
+    "lint": "eslint . --fix",
+    "prepare": "husky",
+    "prepublishOnly": "pnpm build"
+  },
+  "peerDependencies": {
+    "vite": "^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^5.0.0",
+    "@tsconfig/node22": "^22.0.2",
+    "@types/node": "^24.1.0",
+    "@typescript-eslint/eslint-plugin": "^8.38.0",
+    "@typescript-eslint/parser": "^8.38.0",
+    "eslint": "^9.32.0",
+    "eslint-plugin-format": "^1.0.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.2",
+    "rollup": "^4.46.2",
+    "tsdown": "^0.13.1",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.6"
+  }
+}

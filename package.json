@@ -12,11 +12,11 @@
   },
   "keywords": [
     "vite",
-    "plugin",
+    "vite-plugin",
     "inline",
     "html",
     "bundle",
-    "self-contained"
+    "single"
   ],
   "main": "dist/index.cjs",
   "module": "dist/index.js",

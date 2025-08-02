@@ -19,7 +19,8 @@
 ## 安装
 
 ```bash
-npm install vite-plugin-inline -D
+# npm
+npm install @zhoumutou/vite-plugin-inline -D
 
 # yarn
 yarn add @zhoumutou/vite-plugin-inline -D

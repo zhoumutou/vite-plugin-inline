@@ -11,10 +11,13 @@ English | [中文](./README.zh_CN.md)
 
 ## Features
 
-- Inline all CSS referenced by `<link>` tags as `<style>`
-- Inline the main JavaScript file and all its dependencies as `<script type="module">`
-- Optionally remove comments to reduce file size
-- Remove original external JS/CSS files from the build output
+- Inline all CSS `<link>` as `<style>` in HTML
+- Inline entry JS and its imported chunks as a single `<script type="module">`
+- Topologically ordered namespace IIFEs to preserve import order across chunks
+- Optional post-minify/DCE via oxc-minify
+- Optional removal of block comments to reduce size
+- Remove original JS/CSS assets from the bundle
+- Disables modulePreload for cleaner single-file output
 
 ## Installation
 
@@ -31,9 +34,7 @@ pnpm add @zhoumutou/vite-plugin-inline -D
 
 ## Usage
 
-Add the plugin to your Vite or Rolldown config:
-
-```typescript
+```ts
 import inline from '@zhoumutou/vite-plugin-inline'
 import { defineConfig } from 'vite'
 
@@ -46,42 +47,52 @@ export default defineConfig({
 
 ## Options
 
-The plugin accepts the following options:
-
-```typescript
+```ts
 interface Options {
   /** Whether to remove comments in inlined CSS/JS (default: true) */
   removeComments?: boolean
+  /** Use oxc-minify to post-minify the final inlined JS (default: false) */
+  minify?: boolean | MinifyOptions
 }
 ```
 
 ## How It Works
 
-- Inline all CSS referenced by `<link>` tags as `<style>` tags in HTML
-- Merge the main JS file and all its dependencies into a single `<script type="module">` tag
-- Optionally remove comments from inlined assets
-- Remove original JS/CSS files from the build output
+- Replace CSS `<link href="*.css">` with `<style>` containing the file content.
+- Find the main `<script src="*.js">`, read its code and imported chunks from the bundle.
+- Build a dependency graph, topologically sort chunks, and wrap each chunk as a namespace IIFE that returns its exports.
+- Replace `import { x as y } from 'chunk.js'` with `const { x: y } = __ns;` in both chunks and entry.
+- Concatenate all IIFEs (in order) plus the transformed entry into one `<script type="module">`.
+- Optionally run oxc-minify on the final script string.
+- Remove the consumed JS/CSS assets from the output bundle.
 
 ## Example
 
-Suppose your HTML contains:
+Input HTML:
 
 ```html
 <link rel="stylesheet" href="style.css">
 <script type="module" src="main.js"></script>
 ```
 
-After build, with this plugin enabled, your HTML will become:
+Output HTML:
 
 ```html
 <style>/* inlined CSS content */</style>
-<script type="module">/* inlined JS content */</script>
+<script type="module">/* topo-sorted IIFEs + transformed entry (optionally minified) */</script>
 ```
+
+## Notes and Limitations
+
+- This approach does not fully emulate ESM live bindings in complex cyclic graphs; simple back-edges are tolerated.
+- Dynamic imports are not bundled into the inline script by this plugin.
 
 ## Similar Plugins / Inspiration
 
-This plugin was inspired by and references the following excellent projects:
+- [vite-plugin-singlefile](https://github.com/richardtallent/vite-plugin-singlefile)
 
-- [vite-plugin-singlefile](https://github.com/richardtallent/vite-plugin-singlefile) - This Vite build plugin allows you to inline all JavaScript and CSS resources directly into the final dist/index.html file.
+Thanks to the authors for inspiration.
 
-Thanks to all these projects for providing valuable references and inspiration.
+## License
+
+MIT

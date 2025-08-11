@@ -5,16 +5,19 @@
 [![license](https://img.shields.io/npm/l/@zhoumutou/vite-plugin-inline)](https://github.com/zhoumutou/vite-plugin-inline/blob/main/LICENSE)
 [![install size](https://packagephobia.com/badge?p=@zhoumutou/vite-plugin-inline)](https://packagephobia.com/result?p=@zhoumutou/vite-plugin-inline)
 
-一个 Vite 插件，将 CSS 和 JavaScript 资源内联到 HTML 文件中，生成单一、无外部依赖的 HTML 文件。
+一个将 CSS 与 JavaScript 资源内联到 HTML 的 Vite 插件，生成完全自包含的单个 HTML 文件，无需外部依赖。
 
 [English](/README.md) | 中文
 
 ## 特性
 
-- 将所有 `<link>` 标签引用的 CSS 以 `<style>` 形式内联
-- 将主 JavaScript 文件及其所有依赖以 `<script type="module">` 形式内联
-- 可选移除注释以减小体积
-- 构建输出中移除原始外部 JS/CSS 文件
+- 将所有 CSS `<link>` 内联为 HTML 中的 `<style>`
+- 将入口 JS 及其依赖分块合并为单个 `<script type="module">`
+- 通过按拓扑顺序的命名空间 IIFE 保证跨 chunk 的导入顺序
+- 可选：使用 oxc-minify 对最终内联 JS 做二次压缩/消除死代码
+- 可选：移除块级注释以减小体积
+- 从产物中移除原始 JS/CSS 资源文件
+- 关闭 modulePreload，输出更干净的单文件
 
 ## 安装
 
@@ -29,11 +32,9 @@ yarn add @zhoumutou/vite-plugin-inline -D
 pnpm add @zhoumutou/vite-plugin-inline -D
 ```
 
-## 用法
+## 使用
 
-在 Vite 或 Rolldown 配置中添加插件：
-
-```typescript
+```ts
 import inline from '@zhoumutou/vite-plugin-inline'
 import { defineConfig } from 'vite'
 
@@ -46,42 +47,52 @@ export default defineConfig({
 
 ## 选项
 
-插件接受以下选项：
-
-```typescript
+```ts
 interface Options {
   /** 是否移除 JS/CSS 文件中的注释 (默认: true) */
   removeComments?: boolean
+  /** 是否使用 oxc-minify 对最终内联 JS 进行二次压缩/消除死代码（默认：false） */
+  minify?: boolean | MinifyOptions
 }
 ```
 
 ## 工作原理
 
-- 将 HTML 中所有 `<link>` 标签引用的 CSS 以 `<style>` 标签内联
-- 将主 JS 文件及其所有依赖合并为一个 `<script type="module">` 标签内联
-- 可选移除内联资源中的注释
-- 构建产物中移除原始 JS/CSS 文件
+- 将 `<link href="*.css">` 替换为包含文件内容的 `<style>`。
+- 查找主入口 `<script src="*.js">`，读取其代码及依赖的 chunk。
+- 构建依赖图并进行拓扑排序；将每个 chunk 包装为返回其导出的命名空间 IIFE。
+- 在 chunk 与入口中把 `import { x as y } from 'chunk.js'` 重写为 `const { x: y } = __ns;`。
+- 按顺序拼接所有 IIFE 与改写后的入口，生成一个 `<script type="module">`。
+- 可选：对最终脚本字符串执行 oxc-minify。
+- 从最终输出中移除已被内联的 JS/CSS 资源。
 
 ## 示例
 
-假设你的 HTML 包含：
+输入 HTML：
 
 ```html
 <link rel="stylesheet" href="style.css">
 <script type="module" src="main.js"></script>
 ```
 
-构建后，启用本插件，HTML 会变为：
+输出 HTML：
 
 ```html
-<style>/* 内联 CSS 内容 */</style>
-<script type="module">/* 内联 JS 内容 */</script>
+<style>/* inlined CSS content */</style>
+<script type="module">/* topo-sorted IIFEs + transformed entry (optionally minified) */</script>
 ```
 
-## Similar Plugins / Inspiration
+## 注意事项与限制
 
-本插件受到以下优秀项目的启发和参考：
+- 该实现无法完整模拟复杂循环依赖中的 ESM 实时绑定；简单回边会被容忍处理。
+- 动态 import 不会被本插件内联进最终脚本。
 
-- [vite-plugin-singlefile](https://github.com/richardtallent/vite-plugin-singlefile) - 这个 Vite 构建插件允许你将所有 JavaScript 和 CSS 资源直接内联到最终的 dist/index.html 文件中。
+## 相似插件 / 灵感来源
 
-感谢所有这些项目提供的宝贵参考和灵感。
+- [vite-plugin-singlefile](https://github.com/richardtallent/vite-plugin-singlefile)
+
+感谢以上项目带来的启发。
+
+## 许可证
+
+MIT

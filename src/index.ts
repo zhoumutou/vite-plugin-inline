@@ -1,6 +1,6 @@
 /**
  * vite-plugin-inline
- * A Vite (Rolldown) plugin that inlines CSS and JavaScript assets into HTML files,
+ * A Vite (Rollup) plugin that inlines CSS and JavaScript assets into HTML files,
  * generating a single, self-contained HTML file with no external dependencies.
  *
  * How it works (JS):
@@ -13,13 +13,12 @@
  *     const { a: b } = __chunk_y;
  * - For the entry chunk, also replace imports with namespace destructuring.
  * - Finally, output: <script type="module"> prelude(IIFEs) + transformed entry </script>
- *
- * This approach ensures that if main imports chunkA and chunkB, and chunkB depends on chunkA,
- * chunkA's namespace is created first, then chunkB, then the entry, avoiding order issues.
  */
 
+import type { MinifyOptions } from 'oxc-minify'
 import type { OutputAsset, OutputBundle, OutputChunk } from 'rollup'
 import type { Plugin } from 'vite'
+import { minify as minifyCode } from 'oxc-minify'
 
 /**
  * Matches the main script tag with src attribute in HTML (supports " or ')
@@ -284,6 +283,7 @@ function getJsData(
   jsKeys: string[],
   bundle: OutputBundle,
   removeComments: boolean,
+  minify: boolean | MinifyOptions,
 ) {
   const key = jsKeys.find(it => it.endsWith(jsName))
   if (!key) {
@@ -328,8 +328,13 @@ function getJsData(
   // Replace entry's imports with namespace destructuring
   source = replaceImportsWithNs(source, nsMap)
 
-  // Final inline script
-  source = `<script type="module">${(prelude + source).trim()}</script>`
+  // Final inline script (optionally minified by oxc)
+  let combined = (prelude + source).trim()
+  if (minify) {
+    const result = minifyCode('', combined, minify === true ? {} : minify)
+    combined = result.code
+  }
+  source = `<script type="module">${combined}</script>`
 
   // Keys of inlined JS assets (entry + imported chunks)
   const keys = [key].concat(usedKeys)
@@ -351,6 +356,12 @@ export interface Options {
    * @default true
    */
   removeComments?: boolean
+  /**
+   * Use oxc-minify to post-minify the final inlined JS.
+   * Note: This is not a replacement for bundler-level tree-shaking.
+   * @default false
+   */
+  minify?: boolean | MinifyOptions
 }
 
 /**
@@ -358,7 +369,10 @@ export interface Options {
  * Produces a single HTML with no external dependencies.
  */
 export default function VitePluginInline(options: Options = {}): Plugin {
-  const { removeComments = true } = options
+  const {
+    removeComments = true,
+    minify = false,
+  } = options
 
   return {
     name: 'vite-plugin-inline',
@@ -386,7 +400,7 @@ export default function VitePluginInline(options: Options = {}): Plugin {
 
       const toDeleteKeys: string[] = []
 
-      htmlKeys.forEach((htmlKey) => {
+      for (const htmlKey of htmlKeys) {
         const htmlBundle = bundle[htmlKey] as OutputAsset
         let htmlSource = String(htmlBundle.source)
 
@@ -407,7 +421,14 @@ export default function VitePluginInline(options: Options = {}): Plugin {
           | undefined
 
         if (jsMatch) {
-          jsData = getJsData(jsMatch[0], baseName(jsMatch[1]!), jsKeys, bundle, removeComments)
+          jsData = getJsData(
+            jsMatch[0],
+            baseName(jsMatch[1]!),
+            jsKeys,
+            bundle,
+            removeComments,
+            minify,
+          )
         }
 
         // Replace CSS links with <style>
@@ -430,7 +451,7 @@ export default function VitePluginInline(options: Options = {}): Plugin {
         if (jsData)
           keys.push(...jsData.keys)
         toDeleteKeys.push(...keys)
-      })
+      }
 
       // Delete inlined assets (de-duplicated)
       Array.from(new Set(toDeleteKeys)).forEach((key) => {

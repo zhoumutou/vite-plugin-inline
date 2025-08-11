@@ -45,9 +45,6 @@
       "optional": true
     }
   },
-  "dependencies": {
-    "oxc-minify": "^0.81.0"
-  },
   "devDependencies": {
     "@antfu/eslint-config": "^5.2.1",
     "@tsconfig/node22": "^22.0.2",
@@ -58,6 +55,7 @@
     "eslint-plugin-format": "^1.0.1",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.5",
+    "oxc-minify": "^0.81.0",
     "rollup": "^4.46.2",
     "tsdown": "^0.14.1",
     "typescript": "~5.8.3",

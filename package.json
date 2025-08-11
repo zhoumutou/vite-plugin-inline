@@ -1,7 +1,7 @@
 {
   "name": "@zhoumutou/vite-plugin-inline",
   "type": "module",
-  "version": "0.3.0",
+  "version": "0.2.3",
   "description": "A Vite plugin that inlines CSS and JavaScript assets into HTML files, generating a single, self-contained HTML file with no external dependencies.",
   "author": "zhoumutou",
   "license": "MIT",
@@ -37,24 +37,30 @@
     "prepublishOnly": "pnpm build"
   },
   "peerDependencies": {
+    "oxc-minify": ">=0.81.0",
     "vite": "^4.0.0 || ^5.0.0 || ^6.0.0 || ^7.0.0"
   },
-  "devDependencies": {
-    "@antfu/eslint-config": "^5.2.0",
-    "@tsconfig/node22": "^22.0.2",
-    "@types/node": "^24.2.0",
-    "@typescript-eslint/eslint-plugin": "^8.39.0",
-    "@typescript-eslint/parser": "^8.39.0",
-    "eslint": "^9.32.0",
-    "eslint-plugin-format": "^1.0.1",
-    "husky": "^9.1.7",
-    "lint-staged": "^16.1.4",
-    "rollup": "^4.46.2",
-    "tsdown": "^0.13.3",
-    "typescript": "~5.8.3",
-    "vite": "^7.0.6"
+  "peerDependenciesMeta": {
+    "oxc-minify": {
+      "optional": true
+    }
   },
   "dependencies": {
     "oxc-minify": "^0.81.0"
+  },
+  "devDependencies": {
+    "@antfu/eslint-config": "^5.2.1",
+    "@tsconfig/node22": "^22.0.2",
+    "@types/node": "^24.2.1",
+    "@typescript-eslint/eslint-plugin": "^8.39.0",
+    "@typescript-eslint/parser": "^8.39.0",
+    "eslint": "^9.33.0",
+    "eslint-plugin-format": "^1.0.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.1.5",
+    "rollup": "^4.46.2",
+    "tsdown": "^0.14.1",
+    "typescript": "~5.8.3",
+    "vite": "^7.1.1"
   }
 }

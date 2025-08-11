@@ -18,7 +18,6 @@
 import type { MinifyOptions } from 'oxc-minify'
 import type { OutputAsset, OutputBundle, OutputChunk } from 'rollup'
 import type { Plugin } from 'vite'
-import { minify as minifyCode } from 'oxc-minify'
 
 /**
  * Matches the main script tag with src attribute in HTML (supports " or ')
@@ -274,10 +273,30 @@ function getCssData(
 }
 
 /**
+ * Try to minify the final inlined JS by oxc-minify (optional).
+ * Note: This is a post-pass; it cannot replace bundler-level tree-shaking.
+ */
+async function minifyCode(
+  code: string,
+  options?: Record<string, any>,
+): Promise<string> {
+  try {
+    // Dynamically import, so it's optional
+    const { minify } = await import('oxc-minify')
+    const res = minify('', code, options)
+    return res.code
+  }
+  catch (e: any) {
+    console.warn(`[vite-plugin-inline] oxc-minify unavailable: ${e?.message || String(e)}`)
+    return code
+  }
+}
+
+/**
  * Process the main JS entry and all its imported chunks, returning a single <script> tag.
  * It also returns the keys of all consumed assets for deletion from the bundle.
  */
-function getJsData(
+async function getJsData(
   origin: string,
   jsName: string,
   jsKeys: string[],
@@ -331,8 +350,7 @@ function getJsData(
   // Final inline script (optionally minified by oxc)
   let combined = (prelude + source).trim()
   if (minify) {
-    const result = minifyCode('', combined, minify === true ? {} : minify)
-    combined = result.code
+    combined = await minifyCode(combined, minify === true ? {} : minify)
   }
   source = `<script type="module">${combined}</script>`
 
@@ -392,7 +410,7 @@ export default function VitePluginInline(options: Options = {}): Plugin {
      * - For each HTML, inline all <link href="*.css"> and the main <script src="*.js">
      * - Remove the consumed assets from bundle outputs
      */
-    generateBundle(_, bundle) {
+    async generateBundle(_, bundle) {
       const bundleKeys = Object.keys(bundle)
       const htmlKeys = bundleKeys.filter(key => key.endsWith('.html'))
       const cssKeys = bundleKeys.filter(key => key.endsWith('.css'))
@@ -421,7 +439,7 @@ export default function VitePluginInline(options: Options = {}): Plugin {
           | undefined
 
         if (jsMatch) {
-          jsData = getJsData(
+          jsData = await getJsData(
             jsMatch[0],
             baseName(jsMatch[1]!),
             jsKeys,

@@ -49,10 +49,23 @@ export default defineConfig({
 
 ```ts
 interface Options {
-  /** 是否移除 JS/CSS 文件中的注释 (默认: true) */
+  /**
+   * 移除内联 CSS 和 JS 中的块级注释。
+   * 可减小体积，但调试会变得困难。
+   * @default true
+   */
   removeComments?: boolean
-  /** 是否使用 oxc-minify 对最终内联 JS 进行二次压缩/消除死代码（默认：false） */
+  /**
+   * 使用 oxc-minify 对最终内联 JS 进行二次压缩。
+   * 注意：这不是打包阶段的 tree-shaking 替代方案。
+   * @default false
+   */
   minify?: boolean | MinifyOptions
+  /**
+   * 是否用 <![CDATA[ ... ]]> 包裹内联 JS 代码，以兼容 XML/XHTML。
+   * @default false
+   */
+  cdataJs?: boolean
 }
 ```
 

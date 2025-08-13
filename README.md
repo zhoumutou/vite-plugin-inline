@@ -49,10 +49,23 @@ export default defineConfig({
 
 ```ts
 interface Options {
-  /** Whether to remove comments in inlined CSS/JS (default: true) */
+  /**
+   * Remove block comments in inlined CSS and JS.
+   * Reduces size but makes debugging harder.
+   * @default true
+   */
   removeComments?: boolean
-  /** Use oxc-minify to post-minify the final inlined JS (default: false) */
+  /**
+   * Use oxc-minify to post-minify the final inlined JS.
+   * Note: This is not a replacement for bundler-level tree-shaking.
+   * @default false
+   */
   minify?: boolean | MinifyOptions
+  /**
+   * Wrap inlined JS code with <![CDATA[ ... ]]> for XML/XHTML compatibility.
+   * @default false
+   */
+  cdataJs?: boolean
 }
 ```
 

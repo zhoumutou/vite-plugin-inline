@@ -70,6 +70,13 @@ const importRe = /import\s*(\{[\s\S]+?\})\s*from\s*["'][^"']+["']\s*;?/
  */
 const emptyLineRe = /(\r?\n)[\t\f\v ]*(\r?\n)+/g
 
+const PLUGIN_NAME = 'vite-plugin-inline'
+
+function warn(code: string, msg: string, advice?: string) {
+  console.warn(`[${PLUGIN_NAME}] ${msg}${advice ? `\n  Hint: ${advice}` : ''}\n  (code: ${code})`,
+  )
+}
+
 /** Return the basename of a path like "assets/chunkA-xxxx.js" -> "chunkA-xxxx.js" */
 function baseName(p: string) {
   const i = p.lastIndexOf('/')
@@ -121,7 +128,11 @@ function buildGraph(entryDeps: string[], jsKeys: string[], bundle: OutputBundle)
 
     const key = getJsKeyByName(jsName, jsKeys)
     if (!key) {
-      console.warn(`[vite-plugin-inline] JS chunk not found in bundle: ${jsName}`)
+      warn(
+        'MISSING_JS_CHUNK',
+        `JS chunk not found in bundle: ${jsName}`,
+        'Check if file naming / hashing changed or the chunk was tree-shaken',
+      )
       return
     }
 
@@ -197,7 +208,7 @@ function buildChunkNamespace(
 ) {
   const key = getJsKeyByName(jsName, jsKeys)
   if (!key) {
-    throw new Error(`[vite-plugin-inline] Cannot find chunk key for ${jsName}`)
+    throw new Error(`[${PLUGIN_NAME}] Cannot find chunk key for ${jsName} (code: CHUNK_KEY_ERROR)`)
   }
   const jsBundle = bundle[key] as OutputChunk
 
@@ -252,7 +263,11 @@ function getCssData(
 ) {
   const key = cssKeys.find(it => it.endsWith(cssName))
   if (!key) {
-    console.warn(`[vite-plugin-inline] CSS asset not found in bundle: ${cssName}`)
+    warn(
+      'MISSING_CSS_ASSET',
+      `CSS asset not found: ${cssName}`,
+      'If the CSS was inlined / removed by other plugins you can ignore this',
+    )
     return { origin, source: origin, key: '' }
   }
 
@@ -287,9 +302,21 @@ async function minifyCode(
     return res.code
   }
   catch (e: any) {
-    console.warn(`[vite-plugin-inline] oxc-minify unavailable: ${e?.message || String(e)}`)
+    const msg = e?.message || String(e)
+    const needInstall = /cannot find module/i.test(msg)
+    warn(
+      'OXC_MINIFY_UNAVAILABLE',
+      `Skip JS minification (oxc-minify unavailable): ${msg}`,
+      needInstall
+        ? 'Install dev dependency: pnpm add -D oxc-minify (or npm/yarn). Then re-run build.'
+        : 'You can disable the plugin minify option or investigate the above error.',
+    )
     return code
   }
+}
+
+function escapeNewlinesLiteral(str: string) {
+  return str.replace(/\r?\n/g, '\\n')
 }
 
 /**
@@ -306,7 +333,11 @@ async function getJsData(
 ) {
   const key = jsKeys.find(it => it.endsWith(jsName))
   if (!key) {
-    console.warn(`[vite-plugin-inline] Entry JS not found in bundle: ${jsName}`)
+    warn(
+      'ENTRY_JS_NOT_FOUND',
+      `Entry JS not found in bundle: ${jsName}`,
+      'Check if HTML still references the correct entry or if another plugin modified it',
+    )
     return { origin, source: origin, keys: [] as string[] }
   }
 
@@ -352,6 +383,8 @@ async function getJsData(
   if (minify) {
     combined = await minifyCode(combined, minify === true ? {} : minify)
   }
+  combined = escapeNewlinesLiteral(combined)
+
   source = `<script type="module">${combined}</script>`
 
   // Keys of inlined JS assets (entry + imported chunks)
@@ -430,7 +463,11 @@ export default function VitePluginInline(options: Options = {}): Plugin {
         // Find the main <script src="...">
         const jsMatch = htmlSource.match(jsMainRe)
         if (!jsMatch) {
-          console.warn(`[vite-plugin-inline] No main <script src="*.js"> found in ${htmlKey}`)
+          warn(
+            'NO_MAIN_SCRIPT',
+            `No main <script src="*.js"> found in ${htmlKey}`,
+            'Ensure the HTML still contains an external module script tag',
+          )
         }
 
         // Process JS (if any)

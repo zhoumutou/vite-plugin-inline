@@ -387,7 +387,7 @@ async function getJsData(
   combined = escapeNewlinesLiteral(combined)
 
   if (cdataJs) {
-    combined = `/*<![CDATA[*/\n${combined}\n/*]]>*/`
+    combined = `/*<![CDATA[*/${combined}/*]]>*/`
   }
 
   source = `<script type="module">${combined}</script>`

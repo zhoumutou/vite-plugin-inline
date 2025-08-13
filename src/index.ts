@@ -330,6 +330,7 @@ async function getJsData(
   bundle: OutputBundle,
   removeComments: boolean,
   minify: boolean | MinifyOptions,
+  cdataJs: boolean,
 ) {
   const key = jsKeys.find(it => it.endsWith(jsName))
   if (!key) {
@@ -385,6 +386,10 @@ async function getJsData(
   }
   combined = escapeNewlinesLiteral(combined)
 
+  if (cdataJs) {
+    combined = `/*<![CDATA[*/\n${combined}\n/*]]>*/`
+  }
+
   source = `<script type="module">${combined}</script>`
 
   // Keys of inlined JS assets (entry + imported chunks)
@@ -413,6 +418,11 @@ export interface Options {
    * @default false
    */
   minify?: boolean | MinifyOptions
+  /**
+   * Wrap inlined JS code with <![CDATA[ ... ]]> for XML/XHTML compatibility.
+   * @default false
+   */
+  cdataJs?: boolean
 }
 
 /**
@@ -423,6 +433,7 @@ export default function VitePluginInline(options: Options = {}): Plugin {
   const {
     removeComments = true,
     minify = false,
+    cdataJs = false,
   } = options
 
   return {
@@ -483,6 +494,7 @@ export default function VitePluginInline(options: Options = {}): Plugin {
             bundle,
             removeComments,
             minify,
+            cdataJs,
           )
         }
 

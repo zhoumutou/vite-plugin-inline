@@ -1,7 +1,7 @@
 {
   "name": "@zhoumutou/vite-plugin-inline",
   "type": "module",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "A Vite plugin that inlines CSS and JavaScript assets into HTML files, generating a single, self-contained HTML file with no external dependencies.",
   "author": "zhoumutou",
   "license": "MIT",

@@ -33,6 +33,12 @@ const jsMainRe = /<script[^>]*src=["']([^"']+\.js)["'][^>]*><\/script>/
 const jsChunkRe = /import\s*\{[\s\S]+?\}\s*from\s*["']([^"']+\.js)["']\s*;?/g
 
 /**
+ * Matches bare side-effect imports:
+ *   import "chunkA.js";
+ */
+const jsBareImportRe = /import\s*["']([^"']+\.js)["']\s*;?/g
+
+/**
  * Matches link tags for CSS stylesheets (supports " or ')
  */
 const cssRe = /<link[^>]*href=["']([^"']+\.css)["'][^>]*>/g
@@ -110,7 +116,9 @@ function getJsKeyByName(jsName: string, jsKeys: string[]) {
 
 /** Collect direct deps (named-import chunks) from a chunk's source */
 function collectDepsFromSource(source: string) {
-  return Array.from(source.matchAll(jsChunkRe)).map(m => baseName(m[1]!))
+  const named = Array.from(source.matchAll(jsChunkRe)).map(m => baseName(m[1]!))
+  const bare = Array.from(source.matchAll(jsBareImportRe)).map(m => baseName(m[1]!))
+  return Array.from(new Set([...named, ...bare]))
 }
 
 /**
@@ -185,7 +193,7 @@ function topoSort(graph: Map<string, Set<string>>) {
  * Replace "import { ... } from 'x.js'" with "const { ... } = __chunk_x;"
  */
 function replaceImportsWithNs(source: string, nsMap: Map<string, string>) {
-  return source.replace(jsChunkRe, (origin, p1: string) => {
+  source = source.replace(jsChunkRe, (origin, p1: string) => {
     const jsName = baseName(p1)
     const ns = nsMap.get(jsName)
     if (!ns)
@@ -193,6 +201,10 @@ function replaceImportsWithNs(source: string, nsMap: Map<string, string>) {
     const lhs = import2Const(origin) // e.g. "{ a: aa, b }"
     return `const ${lhs}=${ns};`
   })
+
+  source = source.replace(jsBareImportRe, () => ';')
+
+  return source
 }
 
 /**

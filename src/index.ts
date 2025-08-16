@@ -1,458 +1,360 @@
 /**
- * vite-plugin-inline
- * A Vite (Rollup) plugin that inlines CSS and JavaScript assets into HTML files,
- * generating a single, self-contained HTML file with no external dependencies.
+ * VitePluginInline — Inline CSS and JavaScript assets into emitted HTML.
  *
- * How it works (JS):
- * - Detect the main <script src="..."> in HTML.
- * - For the main entry chunk, collect its imported chunks (import { ... } from "x.js").
- * - Build a dependency graph among chunks and topologically sort them.
- * - For each imported chunk, transform it to a namespace IIFE:
- *     const __chunk_x = (() => { ...; return { exported, ... } })();
- *   Inside the chunk, replace "import { a as b } from 'y.js'" with:
- *     const { a: b } = __chunk_y;
- * - For the entry chunk, also replace imports with namespace destructuring.
- * - Finally, output: <script type="module"> prelude(IIFEs) + transformed entry </script>
+ * What this plugin does
+ * - After Vite has produced an output bundle (HTML + CSS + JS), this plugin:
+ *   - Finds <link rel="stylesheet" href="*.css"> tags and inlines those CSS files into <style>...</style>.
+ *   - Finds the "main" <script src="*.js|*.mjs"></script> tag that belongs to this bundle (prefers type="module")
+ *     and replaces it with an inline <script type="module">...</script>.
+ *   - Removes the now inlined .css and .js files from the final bundle so the build
+ *     outputs a single self-contained HTML page (no external CSS/JS files).
+ *
+ * How JS inlining is implemented
+ * - If the chosen entry chunk still has static imports, we will rebundle in-memory to eliminate them
+ *   even when inlineDynamicImports=false. This avoids leaving `import ... from` in the inline <script>.
+ * - When inlineDynamicImports=true, dynamic imports are also flattened into a single chunk for inlining.
+ * - If the in-memory rebundle fails for any reason, we fallback to the original emitted chunk code to keep the build going.
+ *
+ * Important notes and limitations
+ * - Basename matching: Assets are matched by file basename (e.g., "index-abc123.js").
+ *   If your build produces two files with the same basename in different folders,
+ *   the last one processed wins. Consider disambiguating names if necessary.
+ * - Comment removal:
+ *   - CSS: We remove block comments (/* ... *\/) when removeComments=true.
+ *   - JS: We do not post-process comments on the emitted code directly. When rebundling, we minify and
+ *     also attempt to drop legal comments via output.legalComments (if supported by the bundler). If the
+ *     bundler ignores this option, JS comments may be retained.
+ * - XML/XHTML: If you must embed JS in XHTML/XML, set cdataJs=true to wrap the inline
+ *   script in /*<![CDATA[*\/ ... /*]]>*\/ markers. Note: In HTML parsing, CDATA is inert;
+ *   always escape </script> in inline JS (we do).
+ * - Regex-based HTML replacement:
+ *   - We prefer the <script type="module" src="*.js"></script> that belongs to the bundle.
+ *   - We target all <link rel="stylesheet" href="*.css"> occurrences.
+ *   - We also remove <link rel="modulepreload" href="*.js"> entries that point to chunks that were inlined.
+ *     Links pointing to still-external dynamic chunks are kept.
+ * - Other static assets (images/fonts/json/etc.) are NOT inlined and will remain as separate files.
+ *
+ * Performance
+ * - Inlining and (optional) rebundling/minification happen once per HTML in the generateBundle phase.
+ *
+ * Security / CSP
+ * - We preserve nonce attribute from original tags to work with strict CSP (script/style also keep id; style keeps media).
+ * - Inline content escapes </script> and </style> sequences to avoid early tag termination (and escapes <!-- in scripts).
  */
 
-import type { MinifyOptions } from 'oxc-minify'
-import type { OutputAsset, OutputBundle, OutputChunk } from 'rollup'
+import type { RolldownPlugin } from 'rolldown'
 import type { Plugin } from 'vite'
+import { Buffer } from 'node:buffer'
+import { basename } from 'node:path'
+import { build } from 'rolldown'
 
 /**
- * Matches the main script tag with src attribute in HTML (supports " or ')
+ * Matches <script ... src="*.js|*.mjs"></script> (global), excluding "nomodule".
+ * Capture group 1 is the URL. We do not require type="module" here, but we will
+ * prefer tags that explicitly have type="module" when multiple matches exist.
  */
-const jsMainRe = /<script[^>]*src=["']([^"']+\.js)["'][^>]*><\/script>/
+const jsScriptRe = /<script\b(?![^>]+\bnomodule\b)[^>]+\bsrc=(?:"|')([^"'?#>]+\.m?js(?:[?#][^"'>]*)?)(?:"|')[^>]*>\s*<\/script>/gi
 
 /**
- * Matches import statements for JS chunks (named imports only, as emitted by bundlers)
- * Example matched form:
- *   import { a as aa, b } from "chunkA.js";
- * - Supports single/double quotes and optional trailing semicolon.
+ * Matches <link rel="stylesheet" href="*.css"> (global).
+ * Capture group 1 is the URL.
  */
-const jsChunkRe = /import\s*\{[\s\S]+?\}\s*from\s*["']([^"']+\.js)["']\s*;?/g
+const cssLinkRe = /<link\b(?=[^>]+\brel=(?:"|')stylesheet(?:"|'))[^>]+\bhref=(?:"|')([^"'?#>]+\.css(?:[?#][^"'>]*)?)(?:"|')[^>]*>/gi
 
 /**
- * Matches bare side-effect imports:
- *   import "chunkA.js";
+ * Matches <link rel="modulepreload" href="*.js"> (global).
+ * Used to strip preloads that point to chunks we inline.
+ * Capture group 1 is the URL.
  */
-const jsBareImportRe = /import\s*["']([^"']+\.js)["']\s*;?/g
+const modulePreloadRe = /<link\b(?=[^>]+\brel=(?:"|')modulepreload(?:"|'))[^>]+\bhref=(?:"|')([^"'?#>]+\.m?js(?:[?#][^"'>]*)?)(?:"|')[^>]*>/gi
 
 /**
- * Matches link tags for CSS stylesheets (supports " or ')
+ * Matches CSS block comments: \/* ... *\/
  */
-const cssRe = /<link[^>]*href=["']([^"']+\.css)["'][^>]*>/g
+const cssCommentRe = /\/\*[\s\S]*?\*\//g
 
-/**
- * Matches CSS and JS block comments: /* ... *\/
- * Note: we intentionally do not remove // line comments to avoid edge cases.
- */
-const commentRe = /\/\*[\s\S]*?\*\//g
+interface ChunkData {
+  origin: string
+  source: string
+}
 
-/**
- * Matches export statements like: export { a as b, c };
- */
-const exportsRe = /export\s*\{([\s\S]+?)\}\s*;?/
+interface OutputAsset {
+  source: string | Uint8Array
+}
 
-/**
- * Matches named exports with aliases (export { foo as bar })
- */
-const exportAsRe = /([\w$]+)\s+as\s+([\w$]+)/g
+interface OutputChunk {
+  code: string
+}
 
-/**
- * Matches named imports with aliases inside braces (import { foo as bar } from 'x')
- * We reuse the same pattern as exportAsRe.
- */
-const importAsRe = exportAsRe
-
-/**
- * Matches the named import object (left-hand side), robust to spacing and quotes
- * Example: import { a as aa, b } from "x.js";
- */
-const importRe = /import\s*(\{[\s\S]+?\})\s*from\s*["'][^"']+["']\s*;?/
-
-/**
- * Matches multiple empty lines to compress output
- */
-const emptyLineRe = /(\r?\n)[\t\f\v ]*(\r?\n)+/g
+interface OutputBundle {
+  [key: string]: {
+    type: string
+    fileName: string
+    imports?: string[]
+    dynamicImports?: string[]
+  }
+}
 
 const PLUGIN_NAME = 'vite-plugin-inline'
 
-function warn(code: string, msg: string, advice?: string) {
-  console.warn(`[${PLUGIN_NAME}] ${msg}${advice ? `\n  Hint: ${advice}` : ''}\n  (code: ${code})`,
-  )
-}
-
-/** Return the basename of a path like "assets/chunkA-xxxx.js" -> "chunkA-xxxx.js" */
-function baseName(p: string) {
-  const i = p.lastIndexOf('/')
-  return i >= 0 ? p.slice(i + 1) : p
+/**
+ * Extract basename from a URL (strip ?query and #hash first)
+ */
+function urlBaseName(url: string): string {
+  const clean = url.split(/[?#]/)[0]
+  return basename(clean)
 }
 
 /**
- * Turn "chunkA.js" into a short and stable namespace variable.
- * Examples:
- *  - runtime-dom.esm-bundler-DE7exXUM.js -> _DE7exXUM
- *  - chunkA-ABC123.js -> _ABC123
- *  - simple.js -> __simple
+ * Extract a single attribute value from an HTML tag string.
  */
-function toNsVar(jsName: string) {
-  const base = baseName(jsName).replace(/\.js$/, '')
-  // Prefer the last token (commonly the hash) after "_" or "-"
-  const parts = base.replace(/[^\w$-]/g, '_').split(/[_-]/)
-  const last = parts[parts.length - 1] || 'ns'
-  if (/^[A-Z_$][\w$]*$/i.test(last) && last.length >= 6) {
-    return `_${last}`
-  }
-  // Fallback: short, sanitized prefix
-  const sanitized = base.replace(/[^\w$]/g, '_') || 'ns'
-  return `__${sanitized.slice(0, 16)}`
-}
-
-/** Find the bundle key that ends with the given js file name (e.g. chunkA-xxxx.js) */
-function getJsKeyByName(jsName: string, jsKeys: string[]) {
-  return jsKeys.find(it => it.endsWith(jsName))
-}
-
-/** Collect direct deps (named-import chunks) from a chunk's source */
-function collectDepsFromSource(source: string) {
-  const named = Array.from(source.matchAll(jsChunkRe)).map(m => baseName(m[1]!))
-  const bare = Array.from(source.matchAll(jsBareImportRe)).map(m => baseName(m[1]!))
-  return Array.from(new Set([...named, ...bare]))
+function getAttr(html: string, name: string): string | undefined {
+  const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i')
+  const m = html.match(re)
+  return m ? (m[1] ?? m[2] ?? m[3] ?? '') : undefined
 }
 
 /**
- * Build a dependency graph starting from entry's deps.
- * graph: Map<jsName, Set<depJsName>>
+ * Build an attribute string like: ' nonce="..." id="..." media="..."'
+ * Only includes attributes present on the original tag.
  */
-function buildGraph(entryDeps: string[], jsKeys: string[], bundle: OutputBundle) {
-  const graph = new Map<string, Set<string>>()
-  const seen = new Set<string>()
-
-  function dfs(jsName: string) {
-    if (seen.has(jsName))
-      return
-    seen.add(jsName)
-
-    const key = getJsKeyByName(jsName, jsKeys)
-    if (!key) {
-      warn(
-        'MISSING_JS_CHUNK',
-        `JS chunk not found in bundle: ${jsName}`,
-        'Check if file naming / hashing changed or the chunk was tree-shaken',
-      )
-      return
+function buildAttrString(html: string, allow: string[]): string {
+  const parts: string[] = []
+  for (const name of allow) {
+    const val = getAttr(html, name)
+    if (val != null) {
+      // Basic escaping of quotes inside attribute values
+      const safe = String(val).replace(/"/g, '&quot;')
+      parts.push(` ${name}="${safe}"`)
     }
+  }
+  return parts.join('')
+}
 
-    const chunk = bundle[key] as OutputChunk
-    let code = chunk.code
-    // Cheap whitespace collapse to stabilize regex scanning
-    code = code.replace(emptyLineRe, '').trim()
-    const deps = collectDepsFromSource(code)
-    graph.set(jsName, new Set(deps))
-    deps.forEach(dfs)
+/**
+ * Escape HTML-sensitive sequences inside inline script/style content.
+ */
+function escapeForInlineScript(code: string): string {
+  return code.replace(/<\/script/gi, '<\\/script').replace(/<!--/g, '<\\!--')
+}
+function escapeForInlineStyle(code: string): string {
+  return code.replace(/<\/style/gi, '<\\/style')
+}
+
+/**
+ * Create a rolldown virtual plugin.
+ * - Serves JS module contents from a provided Map<string, string> (key=basename).
+ * - Provides empty stubs for ".css" side-effect imports to avoid build errors.
+ */
+function createVirtualPlugin(entryName: string, map: Map<string, string>) {
+  const entry = `\0inline:entry:${entryName}`
+  const prefix = '\0inline:'
+  const EMPTY_CSS_ID = '\0inline:empty-css'
+
+  const plugin: RolldownPlugin = {
+    name: `${PLUGIN_NAME}:virtual`,
+    resolveId(importee: string) {
+      if (importee === entry)
+        return entry
+      if (importee?.startsWith(prefix))
+        return importee
+
+      const clean = importee.split(/[?#]/)[0]
+      if (/\.css$/i.test(clean)) {
+        return EMPTY_CSS_ID
+      }
+
+      const bn = basename(importee)
+      return map.has(bn) ? `${prefix}${bn}` : null
+    },
+    load(id: string) {
+      if (id === entry) {
+        return `import "${prefix}${entryName}";`
+      }
+      if (id === EMPTY_CSS_ID) {
+        // Side-effect CSS import stub
+        return ''
+      }
+      if (id?.startsWith(prefix)) {
+        const bn = id.slice(prefix.length)
+        return map.get(bn) ?? null
+      }
+      return null
+    },
   }
 
-  entryDeps.forEach(dfs)
-  return graph
+  return { entry, plugin }
 }
 
 /**
- * Topologically sort the graph (DFS-based).
- * If a cycle is detected (temp set hit), we simply skip the revisited node
- * to avoid infinite recursion. This is sufficient for the common case where
- * main imports A and B, and B imports A (no real mutual cycle between A and B).
+ * Build inline JS source for given basename.
+ * - When rebundle=false: reuse existing chunk code (no re-bundle).
+ * - When rebundle=true: re-bundle with rolldown to eliminate static imports; whether to also inline dynamic
+ *   imports is controlled by inlineDynamicImports.
+ * - The removeComments flag only toggles CSS comment stripping directly; for JS we attempt to drop legal
+ *   comments during rebundle via output.legalComments if supported by the bundler.
  */
-function topoSort(graph: Map<string, Set<string>>) {
-  const temp = new Set<string>()
-  const perm = new Set<string>()
-  const out: string[] = []
-
-  function visit(n: string) {
-    if (perm.has(n))
-      return
-    if (temp.has(n)) {
-      // Simple handling for cycles: skip the back-edge.
-      // If you need full ESM live-binding semantics, a more complex runtime is required.
-      return
-    }
-    temp.add(n)
-    const deps = graph.get(n)
-    if (deps)
-      deps.forEach(visit)
-    temp.delete(n)
-    perm.add(n)
-    out.push(n)
-  }
-
-  Array.from(graph.keys()).forEach(visit)
-  return out
-}
-
-/**
- * Replace "import { ... } from 'x.js'" with "const { ... } = __chunk_x;"
- */
-function replaceImportsWithNs(source: string, nsMap: Map<string, string>) {
-  source = source.replace(jsChunkRe, (origin, p1: string) => {
-    const jsName = baseName(p1)
-    const ns = nsMap.get(jsName)
-    if (!ns)
-      return origin // Fallback: keep original import if not found
-    const lhs = import2Const(origin) // e.g. "{ a: aa, b }"
-    return `const ${lhs}=${ns};`
-  })
-
-  source = source.replace(jsBareImportRe, () => ';')
-
-  return source
-}
-
-/**
- * Build a namespace IIFE for a chunk, replacing its internal imports by namespace destructuring.
- * Returns the namespace name, the IIFE code snippet, and the bundle key used.
- */
-function buildChunkNamespace(
-  jsName: string,
-  jsKeys: string[],
-  bundle: OutputBundle,
+async function buildInlineJsSource(
+  name: string,
+  map: Map<string, string>,
+  rebundle: boolean,
+  inlineDynamicImports: boolean,
   removeComments: boolean,
-  nsMap: Map<string, string>,
-) {
-  const key = getJsKeyByName(jsName, jsKeys)
-  if (!key) {
-    throw new Error(`[${PLUGIN_NAME}] Cannot find chunk key for ${jsName} (code: CHUNK_KEY_ERROR)`)
+): Promise<string> {
+  if (!rebundle) {
+    // Directly reuse code emitted by Vite for the entry chunk
+    return (map.get(name) ?? '').trim()
   }
-  const jsBundle = bundle[key] as OutputChunk
 
-  let code = jsBundle.code.replace(emptyLineRe, '').trim()
-  if (removeComments)
-    code = code.replace(commentRe, '')
+  try {
+    const { entry, plugin } = createVirtualPlugin(name, map)
+    const { output } = await build({
+      input: entry,
+      plugins: [plugin],
+      treeshake: true,
+      write: false,
+      output: {
+        format: 'es',
+        sourcemap: false,
+        minify: true,
+        inlineDynamicImports,
+        // Note: Some bundler versions may ignore legalComments; in that case comments may remain.
+        legalComments: removeComments ? 'none' : undefined,
+      },
+    })
 
-  // Replace internal imports with namespace destructuring
-  code = replaceImportsWithNs(code, nsMap)
-
-  // Wrap as IIFE returning the export object
-  const ns = nsMap.get(jsName)!
-  const iife = `const ${ns}=(()=>{${export2Return(code)}})();`
-  return { ns, iife, key }
+    const outChunk = output.find(o => o.type === 'chunk')
+    return (outChunk?.code || '').trim()
+  }
+  catch (err) {
+    // Fallback to original chunk to avoid build breakage
+    console.warn(`[${PLUGIN_NAME}] Rebundle failed for ${name}, fallback to original chunk.`, err)
+    return (map.get(name) ?? '').trim()
+  }
 }
 
 /**
- * Convert "export { a as b, c }" to "return { b: a, c }"
- * Assumes the chunk has a single consolidated export statement (typical for bundlers).
- */
-function export2Return(jsCode: string) {
-  return jsCode.replace(exportsRe, (_match, exports: string) => {
-    // Flip "x as y" to "y: x"
-    return `return{${exports.replace(exportAsRe, '$2:$1')}};`
-  })
-}
-
-/**
- * Convert import expression to object destructuring LHS.
- * From: import { a as aa, b } from "x.js"
- * To:   "{ a: aa, b }"
- */
-function import2Const(importExpr: string) {
-  const match = importExpr.match(importRe)
-  // In a well-formed bundler output, this should always match.
-  // Fallback to "{}" on mismatch to avoid crash (no-op).
-  if (!match)
-    return '{}'
-  // Replace "a as aa" -> "a: aa" inside the braces
-  return match[1]!.replace(importAsRe, '$1:$2')
-}
-
-/**
- * Extract CSS content from the bundle and wrap it in a <style> tag.
+ * Produce a <style>...</style> replacement.
+ * - Preserves nonce/id/media from original <link> when present.
+ * - Escapes </style> sequence inside content.
  */
 function getCssData(
   origin: string,
-  cssName: string,
-  cssKeys: string[],
-  bundle: OutputBundle,
+  source: string,
   removeComments: boolean,
-) {
-  const key = cssKeys.find(it => it.endsWith(cssName))
-  if (!key) {
-    warn(
-      'MISSING_CSS_ASSET',
-      `CSS asset not found: ${cssName}`,
-      'If the CSS was inlined / removed by other plugins you can ignore this',
-    )
-    return { origin, source: origin, key: '' }
-  }
-
-  const cssBundle = bundle[key] as OutputAsset
-  let source = String(cssBundle.source)
-
+): ChunkData {
   if (removeComments) {
-    source = source.replace(commentRe, '')
+    source = source.replace(cssCommentRe, '')
   }
-
-  source = `<style>${source.trim()}</style>`
-
+  const attrs = buildAttrString(origin, ['nonce', 'id', 'media'])
+  const body = escapeForInlineStyle(source.trim())
   return {
-    origin, // Original <link> to replace
-    source, // New inlined <style> tag
-    key, // Asset key to delete
+    origin,
+    source: `<style${attrs}>${body}</style>`,
   }
 }
 
 /**
- * Try to minify the final inlined JS by oxc-minify (optional).
- * Note: This is a post-pass; it cannot replace bundler-level tree-shaking.
+ * Normalize asset source (string | Uint8Array) to UTF-8 string.
  */
-async function minifyCode(
-  code: string,
-  options?: Record<string, any>,
-): Promise<string> {
-  try {
-    // Dynamically import, so it's optional
-    const { minify } = await import('oxc-minify')
-    const res = minify('', code, options)
-    return res.code
-  }
-  catch (e: any) {
-    const msg = e?.message || String(e)
-    const needInstall = /cannot find module/i.test(msg)
-    warn(
-      'OXC_MINIFY_UNAVAILABLE',
-      `Skip JS minification (oxc-minify unavailable): ${msg}`,
-      needInstall
-        ? 'Install dev dependency: pnpm add -D oxc-minify (or npm/yarn). Then re-run build.'
-        : 'You can disable the plugin minify option or investigate the above error.',
-    )
-    return code
-  }
-}
-
-function escapeNewlinesLiteral(str: string) {
-  return str.replace(/\r?\n/g, '\\n')
+function toText(source: string | Uint8Array): string {
+  return typeof source === 'string' ? source : Buffer.from(source).toString('utf8')
 }
 
 /**
- * Process the main JS entry and all its imported chunks, returning a single <script> tag.
- * It also returns the keys of all consumed assets for deletion from the bundle.
+ * Find a bundle key by exact match or basename match.
+ * Helps mapping HTML-referenced assets (which usually use a relative URL) to bundle entries.
  */
-async function getJsData(
-  origin: string,
-  jsName: string,
-  jsKeys: string[],
+function findBundleKey(bundle: OutputBundle, fileName: string): string | undefined {
+  if (fileName in bundle)
+    return fileName
+  const bn = basename(fileName)
+  return Object.keys(bundle).find(k => basename(k) === bn)
+}
+
+/**
+ * Collect all (static) imported chunk keys starting from an entry chunk key.
+ * Optionally include dynamic imports as well.
+ */
+function collectJsDeps(
+  entryKey: string,
   bundle: OutputBundle,
-  removeComments: boolean,
-  minify: boolean | MinifyOptions,
-  cdataJs: boolean,
-) {
-  const key = jsKeys.find(it => it.endsWith(jsName))
-  if (!key) {
-    warn(
-      'ENTRY_JS_NOT_FOUND',
-      `Entry JS not found in bundle: ${jsName}`,
-      'Check if HTML still references the correct entry or if another plugin modified it',
-    )
-    return { origin, source: origin, keys: [] as string[] }
-  }
+  includeDynamic = false,
+): Set<string> {
+  const seen = new Set<string>()
+  const q: string[] = []
 
-  const jsBundle = bundle[key] as OutputChunk
-  let source = jsBundle.code.replace(emptyLineRe, '').trim()
-  if (removeComments)
-    source = source.replace(commentRe, '')
+  const start = bundle[entryKey]
+  if (!start || start.type !== 'chunk')
+    return seen
+  q.push(entryKey)
 
-  // Collect entry's direct deps
-  const entryDeps = Array.from(source.matchAll(jsChunkRe)).map(m => baseName(m[1]!))
-  // Build dependency graph and topo order ensuring A before B if B imports A
-  const graph = buildGraph(entryDeps, jsKeys, bundle)
-  const order = topoSort(graph)
+  while (q.length) {
+    const key = q.shift()!
+    if (seen.has(key))
+      continue
+    seen.add(key)
 
-  // Assign a namespace for each chunk
-  const nsMap = new Map<string, string>()
-  const used = new Set<string>()
-  order.forEach((name) => {
-    let ns = toNsVar(name)
-    let i = 1
-    while (used.has(ns)) {
-      ns = `${ns}_${i++}`
+    const cur = bundle[key]
+    if (!cur || cur.type !== 'chunk')
+      continue
+
+    const nexts = [
+      ...(cur.imports ?? []),
+      ...(includeDynamic ? (cur.dynamicImports ?? []) : []),
+    ]
+
+    for (const n of nexts) {
+      const depKey = findBundleKey(bundle, n)
+      if (depKey && !seen.has(depKey))
+        q.push(depKey)
     }
-    used.add(ns)
-    nsMap.set(name, ns)
-  })
-
-  // Build namespace IIFEs in topological order
-  const preludeParts: string[] = []
-  const usedKeys: string[] = []
-  order.forEach((name) => {
-    const { iife, key: k } = buildChunkNamespace(name, jsKeys, bundle, removeComments, nsMap)
-    preludeParts.push(iife)
-    usedKeys.push(k)
-  })
-  const prelude = preludeParts.join('')
-
-  // Replace entry's imports with namespace destructuring
-  source = replaceImportsWithNs(source, nsMap)
-
-  // Final inline script (optionally minified by oxc)
-  let combined = (prelude + source).trim()
-  if (minify) {
-    combined = await minifyCode(combined, minify === true ? {} : minify)
-  }
-  combined = escapeNewlinesLiteral(combined)
-
-  if (cdataJs) {
-    combined = `/*<![CDATA[*/${combined}/*]]>*/`
   }
 
-  source = `<script type="module">${combined}</script>`
-
-  // Keys of inlined JS assets (entry + imported chunks)
-  const keys = [key].concat(usedKeys)
-
-  return {
-    origin, // Original <script> to replace
-    source, // Inlined <script>
-    keys, // Asset keys to delete
-  }
+  seen.delete(entryKey)
+  return seen
 }
 
-/**
- * Plugin options.
- */
 export interface Options {
   /**
-   * Remove block comments in inlined CSS and JS.
-   * Reduces size but makes debugging harder.
+   * Remove block comments in inlined CSS.
+   * For JS: we do not edit emitted code directly; when rebundling we minify and try to drop legal comments
+   * using bundler options if available.
    * @default true
    */
   removeComments?: boolean
-  /**
-   * Use oxc-minify to post-minify the final inlined JS.
-   * Note: This is not a replacement for bundler-level tree-shaking.
-   * @default false
-   */
-  minify?: boolean | MinifyOptions
   /**
    * Wrap inlined JS code with <![CDATA[ ... ]]> for XML/XHTML compatibility.
    * @default false
    */
   cdataJs?: boolean
+  /**
+   * Inline dynamic imports into the main chunk when building the inline <script>.
+   * If true, rolldown will flatten dynamic imports so no extra JS chunks are emitted.
+   * @default false
+   */
+  inlineDynamicImports?: boolean
 }
 
 /**
  * Vite plugin that inlines CSS and JavaScript assets into HTML files.
- * Produces a single HTML with no external dependencies.
+ * Result: a single HTML file with no external CSS/JS dependencies (except dynamic imports if not flattened).
+ * Note: We also strip <link rel="modulepreload"> entries that point to chunks that were inlined.
  */
 export default function VitePluginInline(options: Options = {}): Plugin {
   const {
     removeComments = true,
-    minify = false,
     cdataJs = false,
+    inlineDynamicImports = false,
   } = options
 
   return {
-    name: 'vite-plugin-inline',
-    enforce: 'post', // Run after other plugins process assets
+    name: PLUGIN_NAME,
+    enforce: 'post',
 
-    // Ensure modulePreload is disabled to prevent extra <link rel="modulepreload">.
+    /**
+     * Disable modulePreload generation in Vite since we may inline the referenced chunks anyway.
+     */
     config() {
       return {
         build: {
@@ -462,80 +364,157 @@ export default function VitePluginInline(options: Options = {}): Plugin {
     },
 
     /**
-     * After bundle is generated:
-     * - For each HTML, inline all <link href="*.css"> and the main <script src="*.js">
-     * - Remove the consumed assets from bundle outputs
+     * For each emitted HTML:
+     * - inline <link rel="stylesheet"> into <style>.
+     * - choose the main <script src="*.js|*.mjs"> (prefer type="module") that belongs to this bundle and inline it.
+     * - rebundle in-memory when the entry still has static imports (and optionally flatten dynamic imports).
+     * - remove inlined CSS/JS assets and related source maps from the bundle.
+     * - remove <link rel="modulepreload"> entries pointing to inlined chunks.
      */
     async generateBundle(_, bundle) {
       const bundleKeys = Object.keys(bundle)
-      const htmlKeys = bundleKeys.filter(key => key.endsWith('.html'))
-      const cssKeys = bundleKeys.filter(key => key.endsWith('.css'))
-      const jsKeys = bundleKeys.filter(key => key.endsWith('.js'))
 
-      const toDeleteKeys: string[] = []
+      const jsKeyRe = /\.(?:mjs|js)$/i
+      const cssKeyRe = /\.css$/i
+
+      const htmlKeys = bundleKeys.filter(key => key.endsWith('.html'))
+      const cssKeys = bundleKeys.filter(key => cssKeyRe.test(key))
+      const jsKeys = bundleKeys.filter(key => jsKeyRe.test(key))
+
+      const inlinedKeys = new Set<string>()
+
+      const cssMap = new Map<string, string>()
+      const jsMap = new Map<string, string>()
+
+      cssKeys.forEach((key) => {
+        const name = basename(key)
+        if (cssMap.has(name)) {
+          this.warn?.(`[${PLUGIN_NAME}] Duplicate CSS basename detected: ${name} (${key})`)
+        }
+        cssMap.set(name, toText((bundle[key] as OutputAsset).source))
+      })
+      jsKeys.forEach((key) => {
+        const name = basename(key)
+        if (jsMap.has(name)) {
+          this.warn?.(`[${PLUGIN_NAME}] Duplicate JS basename detected: ${name} (${key})`)
+        }
+        jsMap.set(name, (bundle[key] as OutputChunk).code)
+      })
+
+      // Cache built inline JS SOURCE (string) per (basename + flags)
+      const jsBuildCache = new Map<string, Promise<string>>()
 
       for (const htmlKey of htmlKeys) {
         const htmlBundle = bundle[htmlKey] as OutputAsset
-        let htmlSource = String(htmlBundle.source)
+        let htmlSource = toText(htmlBundle.source)
 
-        // Collect CSS replacements
-        const cssDatas = Array.from(htmlSource.matchAll(cssRe)).map((cssMatch) => {
-          return getCssData(cssMatch[0], baseName(cssMatch[1]!), cssKeys, bundle, removeComments)
-        })
+        const chunkDatas: ChunkData[] = []
 
-        // Find the main <script src="...">
-        const jsMatch = htmlSource.match(jsMainRe)
-        if (!jsMatch) {
-          warn(
-            'NO_MAIN_SCRIPT',
-            `No main <script src="*.js"> found in ${htmlKey}`,
-            'Ensure the HTML still contains an external module script tag',
-          )
-        }
-
-        // Process JS (if any)
-        let jsData:
-          | { origin: string, source: string, keys: string[] }
-          | undefined
-
-        if (jsMatch) {
-          jsData = await getJsData(
-            jsMatch[0],
-            baseName(jsMatch[1]!),
-            jsKeys,
-            bundle,
-            removeComments,
-            minify,
-            cdataJs,
-          )
-        }
-
-        // Replace CSS links with <style>
-        cssDatas.forEach((cssData) => {
-          if (cssData.source && cssData.source !== cssData.origin) {
-            htmlSource = htmlSource.replace(cssData.origin, () => cssData.source)
+        // Inline CSS: only <link rel="stylesheet" href="*.css">
+        Array.from(htmlSource.matchAll(cssLinkRe)).forEach((match) => {
+          const cssHref = match[1]!
+          const cssName = urlBaseName(cssHref)
+          const cssKey = cssKeys.find(k => basename(k) === cssName)
+          const cssCode = cssKey ? cssMap.get(cssName) : ''
+          if (cssKey && cssCode != null) {
+            const cssData = getCssData(match[0], cssCode, removeComments)
+            chunkDatas.push(cssData)
+            inlinedKeys.add(cssKey)
           }
         })
 
-        // Replace the main script tag with inlined module script
-        if (jsData && jsData.source && jsData.source !== jsData.origin) {
-          htmlSource = htmlSource.replace(jsData.origin, () => jsData.source)
+        // Find all candidate JS <script src="*.js"> that belong to this bundle
+        const candidates: { match: RegExpMatchArray, jsName: string, jsKey: string | undefined, isModule: boolean }[] = []
+        Array.from(htmlSource.matchAll(jsScriptRe)).forEach((m) => {
+          const src = m[1]!
+          const jsName = urlBaseName(src)
+          const jsKey = jsKeys.find(k => basename(k) === jsName)
+          if (jsMap.has(jsName) && jsKey) {
+            const isModule = /type\s*=\s*(?:"|')module(?:"|')/i.test(m[0])
+            candidates.push({ match: m, jsName, jsKey, isModule })
+          }
+        })
+
+        // Names of chunks whose modulepreload should be removed (filled when entry is chosen)
+        const removePreloadNames = new Set<string>()
+
+        if (candidates.length) {
+          // Prefer type="module"
+          const chosen = candidates.find(c => c.isModule) ?? candidates[0]
+          const { match: jsMatch, jsName, jsKey } = chosen
+
+          const entryMeta = bundle[jsKey!] as { imports?: string[], dynamicImports?: string[], type: string }
+          const hasStaticImports = Array.isArray(entryMeta?.imports) && entryMeta.imports.length > 0
+          const needRebundle = hasStaticImports || inlineDynamicImports
+
+          // Build or reuse inline JS source
+          const cacheKey = `${jsName}|rb=${needRebundle}|di=${inlineDynamicImports}`
+          let p = jsBuildCache.get(cacheKey)
+          if (!p) {
+            p = buildInlineJsSource(jsName, jsMap, needRebundle, inlineDynamicImports, removeComments)
+            jsBuildCache.set(cacheKey, p)
+          }
+          const codeRaw = await p
+
+          // Preserve nonce/id (CSP/identification)
+          const attrs = buildAttrString(jsMatch[0], ['nonce', 'id'])
+          const body = escapeForInlineScript(cdataJs ? `/*<![CDATA[*/${codeRaw}/*]]>*/` : codeRaw)
+
+          const jsData: ChunkData = {
+            origin: jsMatch[0],
+            source: `<script type="module"${attrs}>${body}</script>`,
+          }
+          chunkDatas.push(jsData)
+
+          // Mark entry and its deps as inlined; optionally include dynamic deps
+          inlinedKeys.add(jsKey!)
+          removePreloadNames.add(basename(jsKey!))
+
+          const deps = collectJsDeps(jsKey!, bundle, inlineDynamicImports)
+          deps.forEach((k) => {
+            inlinedKeys.add(k)
+            removePreloadNames.add(basename(k))
+          })
+
+          if (!inlineDynamicImports) {
+            // Dynamic imports remain external; we warn but keep related preloads intact.
+            const withDynamic = collectJsDeps(jsKey!, bundle, /* includeDynamic */ true)
+            for (const k of withDynamic) {
+              if (!deps.has(k)) {
+                this.warn?.(
+                  `[${PLUGIN_NAME}] Dynamic import detected from "${jsKey}" -> "${k}". `
+                  + `Dynamic chunks are not inlined and will remain as separate files.`,
+                )
+              }
+              else {
+                removePreloadNames.add(basename(k))
+              }
+            }
+          }
         }
 
-        // Update HTML content
-        htmlBundle.source = htmlSource
+        // Strip modulepreload links that point to chunks we just inlined
+        if (removePreloadNames.size) {
+          htmlSource = htmlSource.replace(modulePreloadRe, (full, href) => {
+            const name = urlBaseName(href)
+            return removePreloadNames.has(name) ? '' : full
+          })
+        }
 
-        // Collect deletion keys
-        const keys = cssDatas.map(it => it.key).filter(Boolean)
-        if (jsData)
-          keys.push(...jsData.keys)
-        toDeleteKeys.push(...keys)
+        // Apply replacements (use function form to avoid $-replacement pitfalls)
+        chunkDatas.forEach((chunkData) => {
+          htmlSource = htmlSource.replace(chunkData.origin, () => chunkData.source)
+        })
+
+        htmlBundle.source = htmlSource
       }
 
-      // Delete inlined assets (de-duplicated)
-      Array.from(new Set(toDeleteKeys)).forEach((key) => {
-        if (key && bundle[key])
-          delete bundle[key]
+      // Remove inlined JS (entry + static deps) and CSS assets (+ sourcemaps)
+      inlinedKeys.forEach((key) => {
+        delete bundle[key]
+        const mapKey = `${key}.map`
+        if (mapKey in bundle)
+          delete bundle[mapKey]
       })
     },
   }

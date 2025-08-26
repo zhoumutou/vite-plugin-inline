@@ -40,19 +40,19 @@
     "vite": "^7.0.0"
   },
   "dependencies": {
-    "rolldown": "^1.0.0-beta.32"
+    "rolldown": "^1.0.0-beta.34"
   },
   "devDependencies": {
     "@antfu/eslint-config": "^5.2.1",
     "@tsconfig/node22": "^22.0.2",
     "@types/node": "^24.3.0",
-    "@typescript-eslint/eslint-plugin": "^8.39.1",
-    "@typescript-eslint/parser": "^8.39.1",
-    "eslint": "^9.33.0",
+    "@typescript-eslint/eslint-plugin": "^8.41.0",
+    "@typescript-eslint/parser": "^8.41.0",
+    "eslint": "^9.34.0",
     "eslint-plugin-format": "^1.0.1",
     "husky": "^9.1.7",
     "lint-staged": "^16.1.5",
-    "tsdown": "^0.14.1",
+    "tsdown": "^0.14.2",
     "typescript": "~5.8.3"
   }
 }

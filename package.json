@@ -37,22 +37,22 @@
     "prepublishOnly": "pnpm build"
   },
   "peerDependencies": {
-    "vite": "^7.0.0"
+    "vite": "^7.1.9"
   },
   "dependencies": {
-    "rolldown": "^1.0.0-beta.34"
+    "rolldown": "1.0.0-beta.43"
   },
   "devDependencies": {
-    "@antfu/eslint-config": "^5.2.1",
+    "@antfu/eslint-config": "^5.4.1",
     "@tsconfig/node22": "^22.0.2",
-    "@types/node": "^24.3.0",
-    "@typescript-eslint/eslint-plugin": "^8.41.0",
-    "@typescript-eslint/parser": "^8.41.0",
-    "eslint": "^9.34.0",
-    "eslint-plugin-format": "^1.0.1",
+    "@types/node": "^24.7.2",
+    "@typescript-eslint/eslint-plugin": "^8.46.1",
+    "@typescript-eslint/parser": "^8.46.1",
+    "eslint": "^9.37.0",
+    "eslint-plugin-format": "^1.0.2",
     "husky": "^9.1.7",
-    "lint-staged": "^16.1.5",
-    "tsdown": "^0.14.2",
+    "lint-staged": "^16.2.4",
+    "tsdown": "^0.15.7",
     "typescript": "~5.8.3"
   }
 }

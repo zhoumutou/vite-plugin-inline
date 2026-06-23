@@ -5,7 +5,7 @@
 [![license](https://img.shields.io/npm/l/@zhoumutou/vite-plugin-inline)](https://github.com/zhoumutou/vite-plugin-inline/blob/main/LICENSE)
 [![unpacked size](https://img.shields.io/npm/unpacked-size/%40zhoumutou%2Fvite-plugin-inline)](https://www.npmjs.com/package/@zhoumutou/vite-plugin-inline)
 
-一个将构建产物中的 CSS 与 JavaScript 资源内联到 HTML 的 Vite 插件，输出单个、可独立部署的 HTML 文件。
+一个将构建产物中的 CSS 与 JavaScript 资源内联到 HTML 的 Vite 插件。常见情况下会输出单个、可独立部署的 HTML；若动态 chunk 需要保留外链，或插件为了安全回退保留入口脚本，则会继续输出必要的外部 JavaScript 文件。
 
 [English](./README.md) | 中文
 
@@ -15,11 +15,10 @@
 - 将入口 JS 以内联方式注入为单个 `<script type="module">`
   - 若入口仍存在静态 import，会在内存中重打包以移除这些静态 import
   - 可选：通过 `inlineDynamicImports` 将动态 import 也一并合并进内联脚本
-- 从最终产物中删除已内联的 JS/CSS 文件及其 sourcemap
+- 从最终产物中删除已成功内联的 JS/CSS 文件及其 sourcemap
 - 清理指向已内联 chunk 的 `<link rel="modulepreload">`
-- 保留被替换的 emitted HTML 标签上仍然存在的属性（`style` 保留 `nonce`/`id`/`media`；`script` 以 Vite 在 emitted tag 中保留下来的属性为准）
+- 保留被替换的 emitted HTML 标签上的部分属性（`style` 保留 `nonce`/`id`/`media`；`script` 保留 `nonce`/`id`）
 - 内联内容会转义 `</script>` 与 `</style>`，避免提前闭合
-- 在 Vite 中禁用 modulePreload，生成更“干净”的单文件
 
 ## 安装
 
@@ -96,9 +95,10 @@ interface Options {
   - 若入口无静态 import，直接复用已产出的 chunk 代码
   - 若存在静态 import，则在内存中重打包以移除它们
   - 当 `inlineDynamicImports` 为 `true` 时，同时合并动态 import
-  - 若重打包失败，会回退到原始 chunk，保证构建不中断
+  - 若动态 import 保持外链，插件会重写内联入口中的导入路径，确保仍能正确指向产物中的 chunk
+  - 若重打包失败，会保留原始外链入口 script 并给出 warning，而不是输出一个可能损坏的内联模块
 - 用内联内容替换原标签，然后：
-  - 从 bundle 中删除已内联的 JS/CSS 及其 `.map`
+  - 从 bundle 中删除实际已被内联的 JS/CSS 及其 `.map`
   - 移除指向已内联 chunk 的 `<link rel="modulepreload">`
 
 ## 示例
@@ -123,14 +123,18 @@ interface Options {
 
 ## 注意与限制
 
-- 基于文件名匹配：
-  - 通过文件“基本名”（如 `index-abc123.js`）匹配资源；若不同目录下存在相同基本名，可能产生歧义。
+- 资源定位：
+  - 插件会优先基于每个 HTML 文件的相对路径（以及可用时的 Vite `base`）来解析资源，只在必要时才回退到基本名匹配。
+  - 若只剩下没有路径上下文的重复基本名，仍可能出现歧义。
 - 动态导入：
   - 当 `inlineDynamicImports=false`（默认）时，动态 chunk 仍为外部文件；插件不会删除它们。
+  - 若入口同时包含静态与动态 import，且 `inlineDynamicImports=false`，插件会保留原始外链入口 script，并发出 warning，避免产出损坏的内联模块。
 - 注释保留：
   - `removeComments: false` 只会关闭本插件自己的 CSS 注释剥离，不会自动关闭 Vite 或 Rolldown 的最小化。如果构建链本身仍在压缩 CSS，注释可能在标签替换前就已经被移除了。
 - 非 CSS/JS 资源：
   - 图片、字体、JSON 等不会被内联。
+- 外部 URL：
+  - 不属于当前 bundle 的绝对 URL 或协议相对地址的 CSS/JS 资源会保持原样，不会被误内联。
 - HTML 解析：
   - 基于正则替换；复杂模版场景可能需要自行调整。
 - 安全/CSP：

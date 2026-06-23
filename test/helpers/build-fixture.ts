@@ -2,11 +2,15 @@ import type { Options } from '../../src/index'
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
+import type { BuildOptions } from 'vite'
 import { build } from 'vite'
 import VitePluginInline from '../../src/index'
 
 interface BuildFixtureConfig {
+  base?: string
   minify?: boolean
+  rollupOptions?: BuildOptions['rollupOptions']
+  sourcemap?: boolean
 }
 
 async function listFiles(directory: string, root = directory): Promise<string[]> {
@@ -37,12 +41,15 @@ export async function buildFixture(
   try {
     await build({
       configFile: false,
+      base: config.base,
       root,
       logLevel: 'silent',
       build: {
         outDir,
         emptyOutDir: true,
         minify: config.minify,
+        rollupOptions: config.rollupOptions,
+        sourcemap: config.sourcemap,
       },
       plugins: [VitePluginInline(options)],
     })

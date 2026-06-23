@@ -6,19 +6,20 @@
  *   - Finds <link rel="stylesheet" href="*.css"> tags and inlines those CSS files into <style>...</style>.
  *   - Finds the "main" <script src="*.js|*.mjs"></script> tag that belongs to this bundle (prefers type="module")
  *     and replaces it with an inline <script type="module">...</script>.
- *   - Removes the now inlined .css and .js files from the final bundle so the build
- *     outputs a single self-contained HTML page (no external CSS/JS files).
+ *   - Removes the CSS/JS files that were actually inlined from the final bundle.
+ *   - In the common case this yields a single self-contained HTML page; when dynamic chunks stay external
+ *     or safe fallback is required, the needed external JS files are preserved.
  *
  * How JS inlining is implemented
  * - If the chosen entry chunk still has static imports, we will rebundle in-memory to eliminate them
  *   even when inlineDynamicImports=false. This avoids leaving `import ... from` in the inline <script>.
  * - When inlineDynamicImports=true, dynamic imports are also flattened into a single chunk for inlining.
- * - If the in-memory rebundle fails for any reason, we fallback to the original emitted chunk code to keep the build going.
+ * - If rebundling fails, we keep the original external entry script and warn instead of emitting a broken inline module.
  *
  * Important notes and limitations
- * - Basename matching: Assets are matched by file basename (e.g., "index-abc123.js").
- *   If your build produces two files with the same basename in different folders,
- *   the last one processed wins. Consider disambiguating names if necessary.
+ * - Asset resolution: We resolve asset references by HTML-relative path first (and strip Vite `base` when
+ *   present), then fall back to basename matching only when necessary. Bare ambiguous basenames may still
+ *   require disambiguation.
  * - Comment removal:
  *   - CSS: We remove block comments (/* ... *\/) when removeComments=true.
  *   - JS: We do not post-process comments on the emitted code directly. When rebundling, we minify and
@@ -45,7 +46,7 @@
 import type { RolldownPlugin } from 'rolldown'
 import type { Plugin } from 'vite'
 import { Buffer } from 'node:buffer'
-import { basename } from 'node:path'
+import { basename, posix as pathPosix } from 'node:path'
 import { build } from 'rolldown'
 
 /**
@@ -62,6 +63,13 @@ const jsScriptRe =
  */
 const cssLinkRe =
   /<link\b(?=[^>]+\brel=(?:"|')stylesheet(?:"|'))[^>]+\bhref=(?:"|')([^"'?#>]+\.css(?:[?#][^"'>]*)?)(?:"|')[^>]*>/gi
+
+/**
+ * Matches <link rel="stylesheet" href="data:text/css,..."> (global).
+ * Capture group 1 is the data URL payload.
+ */
+const cssDataUrlLinkRe =
+  /<link\b(?=[^>]+\brel=(?:"|')stylesheet(?:"|'))[^>]+\bhref=(?:"|')(data:text\/css[^"'>]*)(?:"|')[^>]*>/gi
 
 /**
  * Matches <link rel="modulepreload" href="*.js"> (global).
@@ -108,6 +116,73 @@ function urlBaseName(url: string): string {
   return basename(clean)
 }
 
+function stripHtmlAssetBase(url: string, base: string): string {
+  const clean = url.split(/[?#]/)[0]
+  if (!clean || /^[a-z]+:/i.test(clean) || clean.startsWith('//')) return clean
+
+  if (!clean.startsWith('/')) return clean
+
+  const normalizedBase = base.endsWith('/') ? base : `${base}/`
+  if (normalizedBase !== '/' && clean.startsWith(normalizedBase)) {
+    return clean.slice(normalizedBase.length)
+  }
+
+  return clean.slice(1)
+}
+
+function findByBasename(keys: string[], fileName: string): string | undefined {
+  const matches = keys.filter((key) => basename(key) === basename(fileName))
+  return matches.length === 1 ? matches[0] : undefined
+}
+
+function resolveBundleAssetKey(
+  keys: string[],
+  htmlKey: string,
+  ref: string,
+  base: string,
+): string | undefined {
+  const clean = ref.split(/[?#]/)[0]
+  const normalizedRef = stripHtmlAssetBase(ref, base)
+  if (!normalizedRef || /^[a-z]+:/i.test(normalizedRef) || normalizedRef.startsWith('//')) {
+    return undefined
+  }
+
+  const candidates = new Set<string>()
+  if (!clean.startsWith('/')) {
+    candidates.add(pathPosix.normalize(pathPosix.join(bundleDir(htmlKey), normalizedRef)))
+  }
+
+  candidates.add(pathPosix.normalize(normalizedRef))
+
+  for (const candidate of candidates) {
+    if (keys.includes(candidate)) return candidate
+  }
+
+  return findByBasename(keys, normalizedRef)
+}
+
+function resolveImportBundleKey(
+  keys: string[],
+  importerKey: string,
+  importee: string,
+): string | undefined {
+  const clean = importee.split(/[?#]/)[0]
+  if (!clean || /^[a-z]+:/i.test(clean) || clean.startsWith('//')) return undefined
+
+  const candidates = new Set<string>()
+  if (clean.startsWith('./') || clean.startsWith('../')) {
+    candidates.add(pathPosix.normalize(pathPosix.join(bundleDir(importerKey), clean)))
+  }
+
+  candidates.add(pathPosix.normalize(clean))
+
+  for (const candidate of candidates) {
+    if (keys.includes(candidate)) return candidate
+  }
+
+  return findByBasename(keys, clean)
+}
+
 /**
  * Extract a single attribute value from an HTML tag string.
  */
@@ -149,14 +224,15 @@ function escapeForInlineStyle(code: string): string {
  * - Serves JS module contents from a provided Map<string, string> (key=basename).
  * - Provides empty stubs for ".css" side-effect imports to avoid build errors.
  */
-function createVirtualPlugin(entryName: string, map: Map<string, string>) {
-  const entry = `\0inline:entry:${entryName}`
+function createVirtualPlugin(entryKey: string, map: Map<string, string>) {
+  const entry = `\0inline:entry:${entryKey}`
   const prefix = '\0inline:'
   const EMPTY_CSS_ID = '\0inline:empty-css'
+  const keys = [...map.keys()]
 
   const plugin: RolldownPlugin = {
     name: `${PLUGIN_NAME}:virtual`,
-    resolveId(importee: string) {
+    resolveId(importee: string, importer?: string) {
       if (importee === entry) return entry
       if (importee?.startsWith(prefix)) return importee
 
@@ -165,20 +241,21 @@ function createVirtualPlugin(entryName: string, map: Map<string, string>) {
         return EMPTY_CSS_ID
       }
 
-      const bn = basename(importee)
-      return map.has(bn) ? `${prefix}${bn}` : null
+      const importerKey = importer?.startsWith(prefix) ? importer.slice(prefix.length) : entryKey
+      const resolvedKey = resolveImportBundleKey(keys, importerKey, importee)
+      return resolvedKey ? `${prefix}${resolvedKey}` : null
     },
     load(id: string) {
       if (id === entry) {
-        return `import "${prefix}${entryName}";`
+        return `import "${prefix}${entryKey}";`
       }
       if (id === EMPTY_CSS_ID) {
         // Side-effect CSS import stub
         return ''
       }
       if (id?.startsWith(prefix)) {
-        const bn = id.slice(prefix.length)
-        return map.get(bn) ?? null
+        const key = id.slice(prefix.length)
+        return map.get(key) ?? null
       }
       return null
     },
@@ -196,7 +273,7 @@ function createVirtualPlugin(entryName: string, map: Map<string, string>) {
  *   comments during rebundle via output.comments.legal if supported by the bundler.
  */
 async function buildInlineJsSource(
-  name: string,
+  entryKey: string,
   map: Map<string, string>,
   rebundle: boolean,
   inlineDynamicImports: boolean,
@@ -204,33 +281,50 @@ async function buildInlineJsSource(
 ): Promise<string> {
   if (!rebundle) {
     // Directly reuse code emitted by Vite for the entry chunk
-    return (map.get(name) ?? '').trim()
+    return (map.get(entryKey) ?? '').trim()
   }
 
-  try {
-    const { entry, plugin } = createVirtualPlugin(name, map)
-    const { output } = await build({
-      input: entry,
-      plugins: [plugin],
-      treeshake: true,
-      write: false,
-      output: {
-        format: 'es',
-        sourcemap: false,
-        minify: true,
-        codeSplitting: inlineDynamicImports ? false : undefined,
-        // Note: Some bundler versions may ignore comments.legal; in that case comments may remain.
-        comments: removeComments ? { legal: false } : undefined,
-      },
-    })
+  const { entry, plugin } = createVirtualPlugin(entryKey, map)
+  const { output } = await build({
+    input: entry,
+    plugins: [plugin],
+    treeshake: true,
+    write: false,
+    output: {
+      format: 'es',
+      sourcemap: false,
+      minify: true,
+      codeSplitting: inlineDynamicImports ? false : undefined,
+      // Note: Some bundler versions may ignore comments.legal; in that case comments may remain.
+      comments: removeComments ? { legal: false } : undefined,
+    },
+  })
 
-    const outChunk = output.find((o) => o.type === 'chunk')
-    return (outChunk?.code || '').trim()
-  } catch (err) {
-    // Fallback to original chunk to avoid build breakage
-    console.warn(`[${PLUGIN_NAME}] Rebundle failed for ${name}, fallback to original chunk.`, err)
-    return (map.get(name) ?? '').trim()
-  }
+  const outChunk = output.find((o) => o.type === 'chunk')
+  return (outChunk?.code || '').trim()
+}
+
+function bundleDir(fileName: string): string {
+  const dir = pathPosix.dirname(fileName)
+  return dir === '.' ? '' : dir
+}
+
+function toHtmlRelativePath(htmlKey: string, targetKey: string): string {
+  const relativePath = pathPosix.relative(bundleDir(htmlKey), targetKey)
+  return relativePath.startsWith('.') ? relativePath : `./${relativePath}`
+}
+
+function rewriteInlineDynamicImportPaths(code: string, entryKey: string, htmlKey: string): string {
+  const entryDir = bundleDir(entryKey)
+
+  return code.replace(
+    /(import\s*\(\s*)(["'`])(\.\/?[^"'`]+|\.\.\/[^"'`]+)\2(\s*\))/g,
+    (_full, start, quote, specifier, end) => {
+      const targetKey = pathPosix.normalize(pathPosix.join(entryDir, specifier))
+      const rewritten = toHtmlRelativePath(htmlKey, targetKey)
+      return `${start}${quote}${rewritten}${quote}${end}`
+    },
+  )
 }
 
 /**
@@ -257,14 +351,18 @@ function toText(source: string | Uint8Array): string {
   return typeof source === 'string' ? source : Buffer.from(source).toString('utf8')
 }
 
-/**
- * Find a bundle key by exact match or basename match.
- * Helps mapping HTML-referenced assets (which usually use a relative URL) to bundle entries.
- */
-function findBundleKey(bundle: OutputBundle, fileName: string): string | undefined {
-  if (fileName in bundle) return fileName
-  const bn = basename(fileName)
-  return Object.keys(bundle).find((k) => basename(k) === bn)
+function decodeCssDataUrl(url: string): string | undefined {
+  if (!url.startsWith('data:text/css')) return undefined
+
+  const commaIndex = url.indexOf(',')
+  if (commaIndex === -1) return undefined
+
+  const meta = url.slice(0, commaIndex)
+  const payload = url.slice(commaIndex + 1)
+
+  return /;base64/i.test(meta)
+    ? Buffer.from(payload, 'base64').toString('utf8')
+    : decodeURIComponent(payload)
 }
 
 /**
@@ -278,6 +376,7 @@ function collectJsDeps(
 ): Set<string> {
   const seen = new Set<string>()
   const q: string[] = []
+  const bundleKeys = Object.keys(bundle)
 
   const start = bundle[entryKey]
   if (!start || start.type !== 'chunk') return seen
@@ -294,7 +393,7 @@ function collectJsDeps(
     const nexts = [...(cur.imports ?? []), ...(includeDynamic ? (cur.dynamicImports ?? []) : [])]
 
     for (const n of nexts) {
-      const depKey = findBundleKey(bundle, n)
+      const depKey = resolveImportBundleKey(bundleKeys, key, n)
       if (depKey && !seen.has(depKey)) q.push(depKey)
     }
   }
@@ -326,25 +425,21 @@ export interface Options {
 
 /**
  * Vite plugin that inlines CSS and JavaScript assets into HTML files.
- * Result: a single HTML file with no external CSS/JS dependencies (except dynamic imports if not flattened).
+ * Result: a single HTML file with no external CSS/JS dependencies in the common case.
+ * Dynamic chunks remain external unless inlineDynamicImports is enabled, and mixed static+dynamic entries
+ * keep their original external entry script when that is the only safe output.
  * Note: We also strip <link rel="modulepreload"> entries that point to chunks that were inlined.
  */
 export default function VitePluginInline(options: Options = {}): Plugin {
   const { removeComments = true, cdataJs = false, inlineDynamicImports = false } = options
+  let buildBase = '/'
 
   return {
     name: PLUGIN_NAME,
     enforce: 'post',
 
-    /**
-     * Disable modulePreload generation in Vite since we may inline the referenced chunks anyway.
-     */
-    config() {
-      return {
-        build: {
-          modulePreload: false,
-        },
-      }
+    configResolved(config) {
+      buildBase = config.base ?? '/'
     },
 
     /**
@@ -371,18 +466,10 @@ export default function VitePluginInline(options: Options = {}): Plugin {
       const jsMap = new Map<string, string>()
 
       cssKeys.forEach((key) => {
-        const name = basename(key)
-        if (cssMap.has(name)) {
-          this.warn?.(`[${PLUGIN_NAME}] Duplicate CSS basename detected: ${name} (${key})`)
-        }
-        cssMap.set(name, toText((bundle[key] as OutputAsset).source))
+        cssMap.set(key, toText((bundle[key] as OutputAsset).source))
       })
       jsKeys.forEach((key) => {
-        const name = basename(key)
-        if (jsMap.has(name)) {
-          this.warn?.(`[${PLUGIN_NAME}] Duplicate JS basename detected: ${name} (${key})`)
-        }
-        jsMap.set(name, (bundle[key] as OutputChunk).code)
+        jsMap.set(key, (bundle[key] as OutputChunk).code)
       })
 
       // Cache built inline JS SOURCE (string) per (basename + flags)
@@ -397,13 +484,19 @@ export default function VitePluginInline(options: Options = {}): Plugin {
         // Inline CSS: only <link rel="stylesheet" href="*.css">
         Array.from(htmlSource.matchAll(cssLinkRe)).forEach((match) => {
           const cssHref = match[1]!
-          const cssName = urlBaseName(cssHref)
-          const cssKey = cssKeys.find((k) => basename(k) === cssName)
-          const cssCode = cssKey ? cssMap.get(cssName) : ''
+          const cssKey = resolveBundleAssetKey(cssKeys, htmlKey, cssHref, buildBase)
+          const cssCode = cssKey ? cssMap.get(cssKey) : ''
           if (cssKey && cssCode != null) {
             const cssData = getCssData(match[0], cssCode, removeComments)
             chunkDatas.push(cssData)
             inlinedKeys.add(cssKey)
+          }
+        })
+
+        Array.from(htmlSource.matchAll(cssDataUrlLinkRe)).forEach((match) => {
+          const cssCode = decodeCssDataUrl(match[1]!)
+          if (cssCode != null) {
+            chunkDatas.push(getCssData(match[0], cssCode, removeComments))
           }
         })
 
@@ -416,9 +509,9 @@ export default function VitePluginInline(options: Options = {}): Plugin {
         }[] = []
         Array.from(htmlSource.matchAll(jsScriptRe)).forEach((m) => {
           const src = m[1]!
-          const jsName = urlBaseName(src)
-          const jsKey = jsKeys.find((k) => basename(k) === jsName)
-          if (jsMap.has(jsName) && jsKey) {
+          const jsKey = resolveBundleAssetKey(jsKeys, htmlKey, src, buildBase)
+          if (jsKey && jsMap.has(jsKey)) {
+            const jsName = basename(jsKey)
             const isModule = /type\s*=\s*(?:"|')module(?:"|')/i.test(m[0])
             candidates.push({ match: m, jsName, jsKey, isModule })
           }
@@ -431,6 +524,7 @@ export default function VitePluginInline(options: Options = {}): Plugin {
           // Prefer type="module"
           const chosen = candidates.find((c) => c.isModule) ?? candidates[0]
           const { match: jsMatch, jsName, jsKey } = chosen
+          let skipJsInlining = false
 
           const entryMeta = bundle[jsKey!] as {
             imports?: string[]
@@ -438,54 +532,90 @@ export default function VitePluginInline(options: Options = {}): Plugin {
             type: string
           }
           const hasStaticImports = Array.isArray(entryMeta?.imports) && entryMeta.imports.length > 0
+          const hasDynamicImports =
+            Array.isArray(entryMeta?.dynamicImports) && entryMeta.dynamicImports.length > 0
           const needRebundle = hasStaticImports || inlineDynamicImports
 
-          // Build or reuse inline JS source
-          const cacheKey = `${jsName}|rb=${needRebundle}|di=${inlineDynamicImports}`
-          let p = jsBuildCache.get(cacheKey)
-          if (!p) {
-            p = buildInlineJsSource(
-              jsName,
-              jsMap,
-              needRebundle,
-              inlineDynamicImports,
-              removeComments,
+          if (hasStaticImports && hasDynamicImports && !inlineDynamicImports) {
+            this.warn?.(
+              `[${PLUGIN_NAME}] "${jsKey}" has both static and dynamic imports. ` +
+                `Keeping the original external entry script because inlineDynamicImports=false ` +
+                `cannot safely preserve external dynamic chunk references after rebundling.`,
             )
-            jsBuildCache.set(cacheKey, p)
+            skipJsInlining = true
           }
-          const codeRaw = await p
 
-          // Preserve nonce/id (CSP/identification)
-          const attrs = buildAttrString(jsMatch[0], ['nonce', 'id'])
-          const body = escapeForInlineScript(cdataJs ? `/*<![CDATA[*/${codeRaw}/*]]>*/` : codeRaw)
+          if (!skipJsInlining) {
+            // Build or reuse inline JS source
+            const cacheKey = `${jsKey}|rb=${needRebundle}|di=${inlineDynamicImports}`
+            let p = jsBuildCache.get(cacheKey)
+            if (!p) {
+              p = buildInlineJsSource(
+                jsKey!,
+                jsMap,
+                needRebundle,
+                inlineDynamicImports,
+                removeComments,
+              )
+              jsBuildCache.set(cacheKey, p)
+            }
+            let codeRaw: string | undefined
+            try {
+              codeRaw = await p
+            } catch (err) {
+              this.warn?.(
+                `[${PLUGIN_NAME}] Rebundle failed for "${jsKey}". ` +
+                  `Keeping the original external entry script instead of emitting a broken inline module.`,
+              )
+              console.warn(`[${PLUGIN_NAME}] Rebundle failed for ${jsName}.`, err)
+              skipJsInlining = true
+            }
 
-          const jsData: ChunkData = {
-            origin: jsMatch[0],
-            source: `<script type="module"${attrs}>${body}</script>`,
-          }
-          chunkDatas.push(jsData)
+            if (!skipJsInlining) {
+              if (codeRaw == null) {
+                throw new Error(`[${PLUGIN_NAME}] Missing inline code for ${jsKey}`)
+              }
 
-          // Mark entry and its deps as inlined; optionally include dynamic deps
-          inlinedKeys.add(jsKey!)
-          removePreloadNames.add(basename(jsKey!))
+              if (hasDynamicImports && !inlineDynamicImports) {
+                codeRaw = rewriteInlineDynamicImportPaths(codeRaw, jsKey!, htmlKey)
+                codeRaw = codeRaw.replace(/\b__VITE_PRELOAD__\b/g, '[]')
+              }
 
-          const deps = collectJsDeps(jsKey!, bundle, inlineDynamicImports)
-          deps.forEach((k) => {
-            inlinedKeys.add(k)
-            removePreloadNames.add(basename(k))
-          })
+              // Preserve nonce/id (CSP/identification)
+              const attrs = buildAttrString(jsMatch[0], ['nonce', 'id'])
+              const body = escapeForInlineScript(
+                cdataJs ? `/*<![CDATA[*/${codeRaw}/*]]>*/` : codeRaw,
+              )
 
-          if (!inlineDynamicImports) {
-            // Dynamic imports remain external; we warn but keep related preloads intact.
-            const withDynamic = collectJsDeps(jsKey!, bundle, /* includeDynamic */ true)
-            for (const k of withDynamic) {
-              if (!deps.has(k)) {
-                this.warn?.(
-                  `[${PLUGIN_NAME}] Dynamic import detected from "${jsKey}" -> "${k}". ` +
-                    `Dynamic chunks are not inlined and will remain as separate files.`,
-                )
-              } else {
+              const jsData: ChunkData = {
+                origin: jsMatch[0],
+                source: `<script type="module"${attrs}>${body}</script>`,
+              }
+              chunkDatas.push(jsData)
+
+              // Mark entry and its deps as inlined; optionally include dynamic deps
+              inlinedKeys.add(jsKey!)
+              removePreloadNames.add(basename(jsKey!))
+
+              const deps = collectJsDeps(jsKey!, bundle, inlineDynamicImports)
+              deps.forEach((k) => {
+                inlinedKeys.add(k)
                 removePreloadNames.add(basename(k))
+              })
+
+              if (!inlineDynamicImports) {
+                // Dynamic imports remain external; we warn but keep related preloads intact.
+                const withDynamic = collectJsDeps(jsKey!, bundle, /* includeDynamic */ true)
+                for (const k of withDynamic) {
+                  if (!deps.has(k)) {
+                    this.warn?.(
+                      `[${PLUGIN_NAME}] Dynamic import detected from "${jsKey}" -> "${k}". ` +
+                        `Dynamic chunks are not inlined and will remain as separate files.`,
+                    )
+                  } else {
+                    removePreloadNames.add(basename(k))
+                  }
+                }
               }
             }
           }

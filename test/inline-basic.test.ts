@@ -12,9 +12,22 @@ describe('vite-plugin-inline basic output', () => {
   })
 
   it('rebundles static imports before inlining', async () => {
-    const result = await buildFixture('static-import')
+    const result = await buildFixture(
+      'static-import',
+      {},
+      {
+        rollupOptions: {
+          output: {
+            manualChunks(id) {
+              return id.endsWith('/message.ts') ? 'message' : undefined
+            },
+          },
+        },
+      },
+    )
 
     expect(result.html).toContain('hello from dependency')
     expect(result.html).not.toMatch(/import\s+\{/)
+    expect(result.files.some((file) => file.endsWith('.js'))).toBe(false)
   })
 })

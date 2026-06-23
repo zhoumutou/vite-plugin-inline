@@ -5,7 +5,7 @@
 [![license](https://img.shields.io/npm/l/@zhoumutou/vite-plugin-inline)](https://github.com/zhoumutou/vite-plugin-inline/blob/main/LICENSE)
 [![unpacked size](https://img.shields.io/npm/unpacked-size/%40zhoumutou%2Fvite-plugin-inline)](https://www.npmjs.com/package/@zhoumutou/vite-plugin-inline)
 
-A Vite plugin that inlines CSS and JavaScript assets into HTML files, generating a single, self-contained HTML file with no external dependencies.
+A Vite plugin that inlines CSS and JavaScript assets into HTML files. In the common case it produces a single self-contained HTML file; when dynamic chunks stay external or a safe fallback is required, it preserves the necessary external JavaScript files.
 
 English | [中文](./README.zh_CN.md)
 
@@ -15,11 +15,10 @@ English | [中文](./README.zh_CN.md)
 - Inline the entry JS as a single `<script type="module">`
   - If the entry still has static imports, rebundle in-memory to eliminate them
   - Optionally flatten dynamic imports into the inline script via `inlineDynamicImports`
-- Remove original JS/CSS assets (and their source maps) from the bundle
+- Remove JS/CSS assets (and their source maps) that were successfully inlined from the bundle
 - Strip `<link rel="modulepreload">` entries pointing to inlined chunks
-- Preserve attributes that still exist on the emitted HTML tags being replaced (`style` keeps `nonce`/`id`/`media`; `script` keeps whatever Vite leaves on the emitted tag)
+- Preserve selected attributes from the emitted HTML tags being replaced (`style` keeps `nonce`/`id`/`media`; `script` keeps `nonce`/`id`)
 - Escape `</script>` and `</style>` sequences inside inline content
-- Disables `modulePreload` in Vite for cleaner single-file output
 
 ## Installation
 
@@ -96,9 +95,10 @@ interface Options {
   - If the entry has no static imports, reuse the emitted chunk code
   - If it has static imports, rebundle in-memory to eliminate them
   - When `inlineDynamicImports` is `true`, also flatten dynamic imports
-  - If the rebundle fails, fall back to the original chunk to keep the build working
+  - When dynamic imports stay external, rewrite the inline entry's import paths so they still point to the emitted chunks correctly
+  - If the rebundle fails, keep the original external entry script and warn instead of emitting a broken inline module
 - Replace the original tags with inline content, then:
-  - Remove the now-inlined JS/CSS assets (and `.map` files) from the bundle
+  - Remove the JS/CSS assets that were actually inlined (and `.map` files) from the bundle
   - Strip `<link rel="modulepreload">` tags that point to inlined chunks
 
 ## Example
@@ -123,14 +123,18 @@ Output HTML:
 
 ## Notes and Limitations
 
-- Basename matching:
-  - Assets are matched by file basename (e.g., `index-abc123.js`). Duplicate basenames across folders may be ambiguous.
+- Asset resolution:
+  - The plugin first resolves asset references using each HTML file's relative path (and Vite `base` when available), then falls back to basename matching only when necessary.
+  - Bare ambiguous basenames without path context can still resolve unpredictably.
 - Dynamic imports:
   - If `inlineDynamicImports` is `false` (default), dynamic chunks remain external; the plugin does not delete them.
+  - If an entry mixes static and dynamic imports while `inlineDynamicImports` is `false`, the plugin keeps the original external entry script and emits a warning instead of producing a broken inline module.
 - Comment preservation:
   - `removeComments: false` disables this plugin's CSS comment stripping, but it does not disable Vite or Rolldown minification. If your build still minifies CSS, comments may already be gone before the plugin replaces the tag.
 - Non-CSS/JS assets:
   - Images, fonts, JSON, etc., are not inlined by this plugin.
+- External URLs:
+  - Absolute or protocol-relative CSS/JS URLs that do not belong to the current bundle are left untouched.
 - HTML parsing:
   - Replacement is regex-based; complex templating may need adjustments.
 - Security/CSP:

@@ -42,8 +42,7 @@
     "lint": "vp lint",
     "format": "vp fmt . --write",
     "prepare": "vp config --no-agent",
-    "release:verify": "pnpm check && pnpm test && pnpm build && pnpm peers check",
-    "prepublishOnly": "pnpm build"
+    "prepublishOnly": "vp pack"
   },
   "dependencies": {
     "rolldown": "^1.1.2"

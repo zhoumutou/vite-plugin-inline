@@ -21,7 +21,7 @@ jobs:
       - name: Setup Vite+
         uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: '22'
+          node-version: '24'
           cache: true
 
       - name: Check version
@@ -44,11 +44,6 @@ jobs:
 
       - name: Run tests
         run: vp test
-
-      - name: Authenticate npm via OIDC
-        uses: actions/setup-node@v6
-        with:
-          registry-url: 'https://registry.npmjs.org'
 
       - name: Npm publish
         run: npm publish --no-git-checks --access public

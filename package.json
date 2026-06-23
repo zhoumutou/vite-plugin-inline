@@ -1,6 +1,6 @@
 {
   "name": "@zhoumutou/vite-plugin-inline",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "A Vite plugin that inlines CSS and JavaScript assets into HTML files, generating a single, self-contained HTML file with no external dependencies.",
   "keywords": [
     "bundle",

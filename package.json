@@ -15,7 +15,7 @@
   "author": "zhoumutou",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zhoumutou/vite-plugin-inline"
+    "url": "git+https://github.com/zhoumutou/vite-plugin-inline.git"
   },
   "files": [
     "README.*.md",
@@ -49,10 +49,9 @@
   },
   "devDependencies": {
     "@arethetypeswrong/core": "^0.18.3",
-    "@tsconfig/node22": "^22.0.5",
+    "@tsconfig/node26": "^26.0.0",
     "@types/node": "^26.0.0",
     "publint": "^0.3.21",
-    "typescript": "~6.0.3",
     "vite": "^8.0.16",
     "vite-plus": "^0.2.1"
   },

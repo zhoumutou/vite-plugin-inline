@@ -17,7 +17,7 @@ English | [中文](./README.zh_CN.md)
   - Optionally flatten dynamic imports into the inline script via `inlineDynamicImports`
 - Remove original JS/CSS assets (and their source maps) from the bundle
 - Strip `<link rel="modulepreload">` entries pointing to inlined chunks
-- Preserve CSP-related attributes (script/style keep `nonce` and `id`, style keeps `media`)
+- Preserve attributes that still exist on the emitted HTML tags being replaced (`style` keeps `nonce`/`id`/`media`; `script` keeps whatever Vite leaves on the emitted tag)
 - Escape `</script>` and `</style>` sequences inside inline content
 - Disables `modulePreload` in Vite for cleaner single-file output
 
@@ -52,13 +52,24 @@ export default defineConfig({
 })
 ```
 
+## Development
+
+```bash
+pnpm install
+pnpm check
+pnpm test
+pnpm build
+```
+
+This package is published as ESM-only.
+
 ## Options
 
 ```ts
 interface Options {
   /**
    * Remove block comments in inlined CSS.
-   * JS comments are not post-processed; when rebundling, minification may drop comments.
+   * JS comments are not post-processed; when rebundling, upstream minification may still drop comments.
    * @default true
    */
   removeComments?: boolean
@@ -95,15 +106,19 @@ interface Options {
 Input HTML:
 
 ```html
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css" />
 <script type="module" src="main.js"></script>
 ```
 
 Output HTML:
 
 ```html
-<style>/* inlined CSS content */</style>
-<script type="module">/* inlined (optionally rebundled) JS content */</script>
+<style>
+  /* inlined CSS content */
+</style>
+<script type="module">
+  /* inlined (optionally rebundled) JS content */
+</script>
 ```
 
 ## Notes and Limitations
@@ -112,12 +127,15 @@ Output HTML:
   - Assets are matched by file basename (e.g., `index-abc123.js`). Duplicate basenames across folders may be ambiguous.
 - Dynamic imports:
   - If `inlineDynamicImports` is `false` (default), dynamic chunks remain external; the plugin does not delete them.
+- Comment preservation:
+  - `removeComments: false` disables this plugin's CSS comment stripping, but it does not disable Vite or Rolldown minification. If your build still minifies CSS, comments may already be gone before the plugin replaces the tag.
 - Non-CSS/JS assets:
   - Images, fonts, JSON, etc., are not inlined by this plugin.
 - HTML parsing:
   - Replacement is regex-based; complex templating may need adjustments.
 - Security/CSP:
-  - `nonce`/`id`/`media` are preserved; inline content escapes closing tags to avoid early termination.
+  - Attributes are preserved from the emitted HTML tags that the plugin replaces. If Vite strips a source HTML script attribute during HTML transformation, the plugin cannot recover it later.
+  - Inline content escapes closing tags to avoid early termination.
 
 ## Similar Plugins / Inspiration
 

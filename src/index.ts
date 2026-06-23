@@ -53,20 +53,23 @@ import { build } from 'rolldown'
  * Capture group 1 is the URL. We do not require type="module" here, but we will
  * prefer tags that explicitly have type="module" when multiple matches exist.
  */
-const jsScriptRe = /<script\b(?![^>]+\bnomodule\b)[^>]+\bsrc=(?:"|')([^"'?#>]+\.m?js(?:[?#][^"'>]*)?)(?:"|')[^>]*>\s*<\/script>/gi
+const jsScriptRe =
+  /<script\b(?![^>]+\bnomodule\b)[^>]+\bsrc=(?:"|')([^"'?#>]+\.m?js(?:[?#][^"'>]*)?)(?:"|')[^>]*>\s*<\/script>/gi
 
 /**
  * Matches <link rel="stylesheet" href="*.css"> (global).
  * Capture group 1 is the URL.
  */
-const cssLinkRe = /<link\b(?=[^>]+\brel=(?:"|')stylesheet(?:"|'))[^>]+\bhref=(?:"|')([^"'?#>]+\.css(?:[?#][^"'>]*)?)(?:"|')[^>]*>/gi
+const cssLinkRe =
+  /<link\b(?=[^>]+\brel=(?:"|')stylesheet(?:"|'))[^>]+\bhref=(?:"|')([^"'?#>]+\.css(?:[?#][^"'>]*)?)(?:"|')[^>]*>/gi
 
 /**
  * Matches <link rel="modulepreload" href="*.js"> (global).
  * Used to strip preloads that point to chunks we inline.
  * Capture group 1 is the URL.
  */
-const modulePreloadRe = /<link\b(?=[^>]+\brel=(?:"|')modulepreload(?:"|'))[^>]+\bhref=(?:"|')([^"'?#>]+\.m?js(?:[?#][^"'>]*)?)(?:"|')[^>]*>/gi
+const modulePreloadRe =
+  /<link\b(?=[^>]+\brel=(?:"|')modulepreload(?:"|'))[^>]+\bhref=(?:"|')([^"'?#>]+\.m?js(?:[?#][^"'>]*)?)(?:"|')[^>]*>/gi
 
 /**
  * Matches CSS block comments: \/* ... *\/
@@ -154,10 +157,8 @@ function createVirtualPlugin(entryName: string, map: Map<string, string>) {
   const plugin: RolldownPlugin = {
     name: `${PLUGIN_NAME}:virtual`,
     resolveId(importee: string) {
-      if (importee === entry)
-        return entry
-      if (importee?.startsWith(prefix))
-        return importee
+      if (importee === entry) return entry
+      if (importee?.startsWith(prefix)) return importee
 
       const clean = importee.split(/[?#]/)[0]
       if (/\.css$/i.test(clean)) {
@@ -192,7 +193,7 @@ function createVirtualPlugin(entryName: string, map: Map<string, string>) {
  * - When rebundle=true: re-bundle with rolldown to eliminate static imports; whether to also inline dynamic
  *   imports is controlled by inlineDynamicImports.
  * - The removeComments flag only toggles CSS comment stripping directly; for JS we attempt to drop legal
- *   comments during rebundle via output.legalComments if supported by the bundler.
+ *   comments during rebundle via output.comments.legal if supported by the bundler.
  */
 async function buildInlineJsSource(
   name: string,
@@ -217,16 +218,15 @@ async function buildInlineJsSource(
         format: 'es',
         sourcemap: false,
         minify: true,
-        inlineDynamicImports,
-        // Note: Some bundler versions may ignore legalComments; in that case comments may remain.
-        legalComments: removeComments ? 'none' : undefined,
+        codeSplitting: inlineDynamicImports ? false : undefined,
+        // Note: Some bundler versions may ignore comments.legal; in that case comments may remain.
+        comments: removeComments ? { legal: false } : undefined,
       },
     })
 
-    const outChunk = output.find(o => o.type === 'chunk')
+    const outChunk = output.find((o) => o.type === 'chunk')
     return (outChunk?.code || '').trim()
-  }
-  catch (err) {
+  } catch (err) {
     // Fallback to original chunk to avoid build breakage
     console.warn(`[${PLUGIN_NAME}] Rebundle failed for ${name}, fallback to original chunk.`, err)
     return (map.get(name) ?? '').trim()
@@ -238,11 +238,7 @@ async function buildInlineJsSource(
  * - Preserves nonce/id/media from original <link> when present.
  * - Escapes </style> sequence inside content.
  */
-function getCssData(
-  origin: string,
-  source: string,
-  removeComments: boolean,
-): ChunkData {
+function getCssData(origin: string, source: string, removeComments: boolean): ChunkData {
   if (removeComments) {
     source = source.replace(cssCommentRe, '')
   }
@@ -266,10 +262,9 @@ function toText(source: string | Uint8Array): string {
  * Helps mapping HTML-referenced assets (which usually use a relative URL) to bundle entries.
  */
 function findBundleKey(bundle: OutputBundle, fileName: string): string | undefined {
-  if (fileName in bundle)
-    return fileName
+  if (fileName in bundle) return fileName
   const bn = basename(fileName)
-  return Object.keys(bundle).find(k => basename(k) === bn)
+  return Object.keys(bundle).find((k) => basename(k) === bn)
 }
 
 /**
@@ -285,29 +280,22 @@ function collectJsDeps(
   const q: string[] = []
 
   const start = bundle[entryKey]
-  if (!start || start.type !== 'chunk')
-    return seen
+  if (!start || start.type !== 'chunk') return seen
   q.push(entryKey)
 
   while (q.length) {
     const key = q.shift()!
-    if (seen.has(key))
-      continue
+    if (seen.has(key)) continue
     seen.add(key)
 
     const cur = bundle[key]
-    if (!cur || cur.type !== 'chunk')
-      continue
+    if (!cur || cur.type !== 'chunk') continue
 
-    const nexts = [
-      ...(cur.imports ?? []),
-      ...(includeDynamic ? (cur.dynamicImports ?? []) : []),
-    ]
+    const nexts = [...(cur.imports ?? []), ...(includeDynamic ? (cur.dynamicImports ?? []) : [])]
 
     for (const n of nexts) {
       const depKey = findBundleKey(bundle, n)
-      if (depKey && !seen.has(depKey))
-        q.push(depKey)
+      if (depKey && !seen.has(depKey)) q.push(depKey)
     }
   }
 
@@ -342,11 +330,7 @@ export interface Options {
  * Note: We also strip <link rel="modulepreload"> entries that point to chunks that were inlined.
  */
 export default function VitePluginInline(options: Options = {}): Plugin {
-  const {
-    removeComments = true,
-    cdataJs = false,
-    inlineDynamicImports = false,
-  } = options
+  const { removeComments = true, cdataJs = false, inlineDynamicImports = false } = options
 
   return {
     name: PLUGIN_NAME,
@@ -377,9 +361,9 @@ export default function VitePluginInline(options: Options = {}): Plugin {
       const jsKeyRe = /\.(?:mjs|js)$/i
       const cssKeyRe = /\.css$/i
 
-      const htmlKeys = bundleKeys.filter(key => key.endsWith('.html'))
-      const cssKeys = bundleKeys.filter(key => cssKeyRe.test(key))
-      const jsKeys = bundleKeys.filter(key => jsKeyRe.test(key))
+      const htmlKeys = bundleKeys.filter((key) => key.endsWith('.html'))
+      const cssKeys = bundleKeys.filter((key) => cssKeyRe.test(key))
+      const jsKeys = bundleKeys.filter((key) => jsKeyRe.test(key))
 
       const inlinedKeys = new Set<string>()
 
@@ -414,7 +398,7 @@ export default function VitePluginInline(options: Options = {}): Plugin {
         Array.from(htmlSource.matchAll(cssLinkRe)).forEach((match) => {
           const cssHref = match[1]!
           const cssName = urlBaseName(cssHref)
-          const cssKey = cssKeys.find(k => basename(k) === cssName)
+          const cssKey = cssKeys.find((k) => basename(k) === cssName)
           const cssCode = cssKey ? cssMap.get(cssName) : ''
           if (cssKey && cssCode != null) {
             const cssData = getCssData(match[0], cssCode, removeComments)
@@ -424,11 +408,16 @@ export default function VitePluginInline(options: Options = {}): Plugin {
         })
 
         // Find all candidate JS <script src="*.js"> that belong to this bundle
-        const candidates: { match: RegExpMatchArray, jsName: string, jsKey: string | undefined, isModule: boolean }[] = []
+        const candidates: {
+          match: RegExpMatchArray
+          jsName: string
+          jsKey: string | undefined
+          isModule: boolean
+        }[] = []
         Array.from(htmlSource.matchAll(jsScriptRe)).forEach((m) => {
           const src = m[1]!
           const jsName = urlBaseName(src)
-          const jsKey = jsKeys.find(k => basename(k) === jsName)
+          const jsKey = jsKeys.find((k) => basename(k) === jsName)
           if (jsMap.has(jsName) && jsKey) {
             const isModule = /type\s*=\s*(?:"|')module(?:"|')/i.test(m[0])
             candidates.push({ match: m, jsName, jsKey, isModule })
@@ -440,10 +429,14 @@ export default function VitePluginInline(options: Options = {}): Plugin {
 
         if (candidates.length) {
           // Prefer type="module"
-          const chosen = candidates.find(c => c.isModule) ?? candidates[0]
+          const chosen = candidates.find((c) => c.isModule) ?? candidates[0]
           const { match: jsMatch, jsName, jsKey } = chosen
 
-          const entryMeta = bundle[jsKey!] as { imports?: string[], dynamicImports?: string[], type: string }
+          const entryMeta = bundle[jsKey!] as {
+            imports?: string[]
+            dynamicImports?: string[]
+            type: string
+          }
           const hasStaticImports = Array.isArray(entryMeta?.imports) && entryMeta.imports.length > 0
           const needRebundle = hasStaticImports || inlineDynamicImports
 
@@ -451,7 +444,13 @@ export default function VitePluginInline(options: Options = {}): Plugin {
           const cacheKey = `${jsName}|rb=${needRebundle}|di=${inlineDynamicImports}`
           let p = jsBuildCache.get(cacheKey)
           if (!p) {
-            p = buildInlineJsSource(jsName, jsMap, needRebundle, inlineDynamicImports, removeComments)
+            p = buildInlineJsSource(
+              jsName,
+              jsMap,
+              needRebundle,
+              inlineDynamicImports,
+              removeComments,
+            )
             jsBuildCache.set(cacheKey, p)
           }
           const codeRaw = await p
@@ -482,11 +481,10 @@ export default function VitePluginInline(options: Options = {}): Plugin {
             for (const k of withDynamic) {
               if (!deps.has(k)) {
                 this.warn?.(
-                  `[${PLUGIN_NAME}] Dynamic import detected from "${jsKey}" -> "${k}". `
-                  + `Dynamic chunks are not inlined and will remain as separate files.`,
+                  `[${PLUGIN_NAME}] Dynamic import detected from "${jsKey}" -> "${k}". ` +
+                    `Dynamic chunks are not inlined and will remain as separate files.`,
                 )
-              }
-              else {
+              } else {
                 removePreloadNames.add(basename(k))
               }
             }
@@ -513,8 +511,7 @@ export default function VitePluginInline(options: Options = {}): Plugin {
       inlinedKeys.forEach((key) => {
         delete bundle[key]
         const mapKey = `${key}.map`
-        if (mapKey in bundle)
-          delete bundle[mapKey]
+        if (mapKey in bundle) delete bundle[mapKey]
       })
     },
   }

@@ -1,58 +1,67 @@
 {
   "name": "@zhoumutou/vite-plugin-inline",
-  "type": "module",
   "version": "0.5.0",
   "description": "A Vite plugin that inlines CSS and JavaScript assets into HTML files, generating a single, self-contained HTML file with no external dependencies.",
-  "author": "zhoumutou",
-  "license": "MIT",
+  "keywords": [
+    "bundle",
+    "html",
+    "inline",
+    "single",
+    "vite",
+    "vite-plugin"
+  ],
   "homepage": "https://github.com/zhoumutou/vite-plugin-inline#readme",
+  "license": "MIT",
+  "author": "zhoumutou",
   "repository": {
     "type": "git",
-    "url": "https://github.com/zhoumutou/vite-plugin-inline.git"
+    "url": "git+https://github.com/zhoumutou/vite-plugin-inline.git"
   },
-  "keywords": [
-    "vite",
-    "vite-plugin",
-    "inline",
-    "html",
-    "bundle",
-    "single"
-  ],
-  "main": "dist/index.cjs",
-  "module": "dist/index.js",
-  "types": "dist/index.d.ts",
   "files": [
     "README.*.md",
     "README.md",
     "dist"
   ],
+  "type": "module",
+  "sideEffects": false,
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": null,
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "check": "vp check",
+    "test": "vp test",
+    "lint": "vp lint",
+    "format": "vp fmt . --write",
+    "prepare": "vp config --no-agent",
+    "release:verify": "pnpm check && pnpm test && pnpm build && pnpm peers check",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "rolldown": "^1.1.2"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/core": "^0.18.3",
+    "@tsconfig/node22": "^22.0.5",
+    "@types/node": "^26.0.0",
+    "publint": "^0.3.21",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16",
+    "vite-plus": "^0.2.1"
+  },
+  "peerDependencies": {
+    "vite": "^8.0.16"
+  },
   "engines": {
     "node": ">=22.0.0"
   },
-  "scripts": {
-    "build": "tsdown",
-    "typecheck": "tsc --build --noEmit",
-    "lint": "eslint . --fix",
-    "prepare": "husky",
-    "prepublishOnly": "pnpm build"
-  },
-  "peerDependencies": {
-    "vite": "^8.0.0"
-  },
-  "dependencies": {
-    "rolldown": "1.0.0-beta.43"
-  },
-  "devDependencies": {
-    "@antfu/eslint-config": "^5.4.1",
-    "@tsconfig/node22": "^22.0.2",
-    "@types/node": "^24.7.2",
-    "@typescript-eslint/eslint-plugin": "^8.46.1",
-    "@typescript-eslint/parser": "^8.46.1",
-    "eslint": "^9.37.0",
-    "eslint-plugin-format": "^1.0.2",
-    "husky": "^9.1.7",
-    "lint-staged": "^16.2.4",
-    "tsdown": "^0.15.7",
-    "typescript": "~5.8.3"
-  }
+  "packageManager": "pnpm@11.8.0"
 }

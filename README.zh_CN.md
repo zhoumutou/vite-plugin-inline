@@ -17,7 +17,7 @@
   - 可选：通过 `inlineDynamicImports` 将动态 import 也一并合并进内联脚本
 - 从最终产物中删除已内联的 JS/CSS 文件及其 sourcemap
 - 清理指向已内联 chunk 的 `<link rel="modulepreload">`
-- 保留 CSP 相关属性（script/style 保留 `nonce`、`id`；style 保留 `media`）
+- 保留被替换的 emitted HTML 标签上仍然存在的属性（`style` 保留 `nonce`/`id`/`media`；`script` 以 Vite 在 emitted tag 中保留下来的属性为准）
 - 内联内容会转义 `</script>` 与 `</style>`，避免提前闭合
 - 在 Vite 中禁用 modulePreload，生成更“干净”的单文件
 
@@ -52,13 +52,24 @@ export default defineConfig({
 })
 ```
 
+## 开发
+
+```bash
+pnpm install
+pnpm check
+pnpm test
+pnpm build
+```
+
+当前发布产物为 ESM-only。
+
 ## 选项
 
 ```ts
 interface Options {
   /**
    * 是否移除内联 CSS 的块级注释（/* ... *／）。
-   * JS 不做直接注释处理；当发生重打包时，最小化过程可能会移除注释。
+   * JS 不做直接注释处理；当发生重打包时，上游最小化流程仍可能移除注释。
    * @default true
    */
   removeComments?: boolean
@@ -95,15 +106,19 @@ interface Options {
 输入 HTML：
 
 ```html
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css" />
 <script type="module" src="main.js"></script>
 ```
 
 输出 HTML：
 
 ```html
-<style>/* inlined CSS content */</style>
-<script type="module">/* inlined (optionally rebundled) JS content */</script>
+<style>
+  /* inlined CSS content */
+</style>
+<script type="module">
+  /* inlined (optionally rebundled) JS content */
+</script>
 ```
 
 ## 注意与限制
@@ -112,12 +127,15 @@ interface Options {
   - 通过文件“基本名”（如 `index-abc123.js`）匹配资源；若不同目录下存在相同基本名，可能产生歧义。
 - 动态导入：
   - 当 `inlineDynamicImports=false`（默认）时，动态 chunk 仍为外部文件；插件不会删除它们。
+- 注释保留：
+  - `removeComments: false` 只会关闭本插件自己的 CSS 注释剥离，不会自动关闭 Vite 或 Rolldown 的最小化。如果构建链本身仍在压缩 CSS，注释可能在标签替换前就已经被移除了。
 - 非 CSS/JS 资源：
   - 图片、字体、JSON 等不会被内联。
 - HTML 解析：
   - 基于正则替换；复杂模版场景可能需要自行调整。
 - 安全/CSP：
-  - 保留 `nonce`/`id`/`media` 等属性；内联内容转义避免提前结束标签。
+  - 插件会保留它实际替换到的 emitted HTML 标签上的属性。若 Vite 在 HTML 转换阶段已经移除了源 HTML 中的 script 属性，插件无法在后续阶段再恢复它。
+  - 内联内容转义避免提前结束标签。
 
 ## 类似插件 / 灵感
 

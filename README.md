@@ -5,7 +5,7 @@
 [![license](https://img.shields.io/npm/l/@zhoumutou/vite-plugin-inline)](https://github.com/zhoumutou/vite-plugin-inline/blob/main/LICENSE)
 [![unpacked size](https://img.shields.io/npm/unpacked-size/%40zhoumutou%2Fvite-plugin-inline)](https://www.npmjs.com/package/@zhoumutou/vite-plugin-inline)
 
-A Vite plugin that inlines CSS and JavaScript assets into HTML files. In the common case it produces a single self-contained HTML file; when dynamic chunks stay external or a safe fallback is required, it preserves the necessary external JavaScript files.
+A Vite plugin that inlines CSS and JavaScript assets into HTML files, generating self-contained output with safe handling of dynamic imports.
 
 English | [中文](./README.zh_CN.md)
 

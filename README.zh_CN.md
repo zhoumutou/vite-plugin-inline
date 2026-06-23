@@ -5,7 +5,7 @@
 [![license](https://img.shields.io/npm/l/@zhoumutou/vite-plugin-inline)](https://github.com/zhoumutou/vite-plugin-inline/blob/main/LICENSE)
 [![unpacked size](https://img.shields.io/npm/unpacked-size/%40zhoumutou%2Fvite-plugin-inline)](https://www.npmjs.com/package/@zhoumutou/vite-plugin-inline)
 
-一个将构建产物中的 CSS 与 JavaScript 资源内联到 HTML 的 Vite 插件。常见情况下会输出单个、可独立部署的 HTML；若动态 chunk 需要保留外链，或插件为了安全回退保留入口脚本，则会继续输出必要的外部 JavaScript 文件。
+一个将构建产物中的 CSS 与 JavaScript 资源内联到 HTML 的 Vite 插件，输出自包含的 HTML 并提供安全的动态导入处理。
 
 [English](./README.md) | 中文
 

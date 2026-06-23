@@ -7,9 +7,7 @@ on:
 
 permissions:
   contents: write
-
-env:
-  NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
+  id-token: write
 
 jobs:
   release:
@@ -47,15 +45,15 @@ jobs:
       - name: Run tests
         run: vp test
 
-      - name: Github release
-        uses: softprops/action-gh-release@v3
-        with:
-          generate_release_notes: true
-
-      - name: Setup Node.js for npm publish
+      - name: Authenticate npm via OIDC
         uses: actions/setup-node@v6
         with:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Npm publish
-        run: npm publish --no-git-checks --access public
+        run: npm publish --no-git-checks --access public --provenance
+
+      - name: Github release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true

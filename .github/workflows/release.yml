@@ -46,7 +46,7 @@ jobs:
         run: vp test
 
       - name: Npm publish
-        run: npm publish --no-git-checks --access public
+        run: npm publish --access public
 
       - name: Github release
         uses: softprops/action-gh-release@v3
